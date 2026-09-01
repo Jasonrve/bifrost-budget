@@ -77,7 +77,7 @@ The server emits structured JSON logs to standard output for:
 - upstream quota requests and responses
 - errors
 
-The logs intentionally omit raw virtual keys and Authorization values; they only record the chosen auth path and the outcome.
+The logs intentionally omit raw virtual keys and Authorization values; they record only the chosen auth path, a non-reversible token fingerprint for correlation, and safe JWT claim fields such as issuer, subject, and tenant when the token is already a JWT.
 
 ## Container
 
@@ -98,7 +98,7 @@ docker run --rm -p 8080:8080 \
 
 The environment-based key above is a fallback example for local/dev or explicit non-production use. Production deployments should rely on the caller's `Authorization` header path instead.
 
-The CI/publish pipeline also tags the image as `ghcr.io/jasonrve/bifrost-budget:auth-forwarding-2` for this auth-forwarding release line.
+The CI/publish pipeline also tags the image as `ghcr.io/jasonrve/bifrost-budget:auth-trace-1` for this auth-tracing release line.
 
 Health check:
 

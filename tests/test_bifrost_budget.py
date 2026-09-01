@@ -1,16 +1,24 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import base64
+import json
 import logging
 
 import httpx
 import pytest
 
 from bifrost_budget.client import BifrostClient
-from bifrost_budget.logging import configure_logging
+from bifrost_budget.logging import build_credential_trace, configure_logging, fingerprint_value
 from bifrost_budget.normalization import normalize_quota_payload
 from bifrost_budget.server import _resolve_credential, create_server
 from bifrost_budget.settings import BifrostSettings
+
+
+def _make_jwt(payload: dict[str, object]) -> str:
+    header = base64.urlsafe_b64encode(json.dumps({"alg": "none", "typ": "JWT"}).encode("utf-8")).rstrip(b"=")
+    body = base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).rstrip(b"=")
+    return f"{header.decode('utf-8')}.{body.decode('utf-8')}.signature"
 
 
 @pytest.mark.asyncio
@@ -50,6 +58,31 @@ async def test_normalize_quota_payload_derives_remaining_values() -> None:
     assert report.budgets[0].derived_remaining is True
     assert report.budgets[1].remaining == 375
     assert report.budgets[1].derived_remaining is False
+
+
+@pytest.mark.asyncio
+async def test_build_credential_trace_redacts_authorization_token_and_extracts_safe_claims() -> None:
+    token = _make_jwt({"iss": "https://issuer.example.com", "sub": "user-123", "tenant": "tenant-42"})
+    credential = f"Bearer {token}"
+
+    trace = build_credential_trace(
+        credential,
+        auth_source="request_header:authorization",
+        credential_mode="authorization",
+    )
+
+    assert trace["auth_source"] == "request_header:authorization"
+    assert trace["credential_mode"] == "authorization"
+    assert trace["token_present"] is True
+    assert trace["scheme"] == "Bearer"
+    assert trace["token_fingerprint"] == fingerprint_value(token)
+    assert trace["claims"] == {
+        "iss": "https://issuer.example.com",
+        "sub": "user-123",
+        "tenant": "tenant-42",
+    }
+    assert token not in json.dumps(trace)
+    assert "signature" not in json.dumps(trace)
 
 
 @pytest.mark.asyncio
@@ -101,10 +134,12 @@ async def test_client_emits_structured_logs_for_request_and_success(caplog: pyte
     client = httpx.AsyncClient(transport=transport, base_url="https://bifrost.example.com")
     settings = BifrostSettings(api_base_url="https://bifrost.example.com")
     caplog.set_level(logging.INFO, logger="bifrost_budget")
+    token = _make_jwt({"iss": "https://issuer.example.com", "sub": "user-123", "tenant": "tenant-42"})
+    credential = f"Bearer {token}"
     try:
         bifrost = BifrostClient(settings, client=client)
         await bifrost.fetch_quota(
-            credential="Bearer auth-secret",
+            credential=credential,
             credential_mode="authorization",
             auth_source="request_header:authorization",
         )
@@ -114,6 +149,9 @@ async def test_client_emits_structured_logs_for_request_and_success(caplog: pyte
     log_text = "\n".join(record.getMessage() for record in caplog.records)
     assert '"event":"upstream_quota_request"' in log_text
     assert '"event":"upstream_quota_success"' in log_text
+    assert '"token_fingerprint":"' in log_text
+    assert '"claims":{"iss":"https://issuer.example.com","sub":"user-123","tenant":"tenant-42"}' in log_text
+    assert token not in log_text
     assert 'auth-secret' not in log_text
 
 
@@ -158,7 +196,10 @@ async def test_resolve_credential_prefers_authorization_header(caplog: pytest.Lo
     assert resolved == "Bearer auth-secret"
     assert source == "request_header:authorization"
     assert mode == "authorization"
-    assert any("auth_source_selected" in record.getMessage() for record in caplog.records)
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert '"event":"auth_source_selected"' in log_text
+    assert '"credential_identity":' in log_text
+    assert 'auth-secret' not in log_text
 
 
 @pytest.mark.asyncio

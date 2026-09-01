@@ -10,7 +10,7 @@ from mcp.server.mcpserver.context import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
 from .client import BifrostClient
-from .logging import log_event
+from .logging import build_credential_trace, log_event
 from .settings import BifrostSettings
 
 SERVER_NAME = "bifrost-budget"
@@ -57,6 +57,11 @@ def create_server() -> MCPServer[object]:
             "tool_invocation",
             tool="get_quota",
             auth_source=auth_source,
+            credential_identity=build_credential_trace(
+                credential,
+                auth_source=auth_source,
+                credential_mode=credential_mode,
+            ),
             transport=settings.transport,
             quota_url=settings.quota_url,
         )
@@ -80,7 +85,16 @@ def _resolve_credential(
 ) -> tuple[str, str, Literal["authorization", "virtual_key"]]:
     if explicit and explicit.strip():
         resolved = explicit.strip()
-        log_event(logging.INFO, "auth_source_selected", source="tool_argument")
+        log_event(
+            logging.INFO,
+            "auth_source_selected",
+            source="tool_argument",
+            credential_identity=build_credential_trace(
+                resolved,
+                auth_source="tool_argument",
+                credential_mode="virtual_key",
+            ),
+        )
         return resolved, "tool_argument", "virtual_key"
 
     headers = ctx.headers if ctx is not None else None
@@ -88,17 +102,45 @@ def _resolve_credential(
         authorization = headers.get("authorization") or headers.get("Authorization")
         if authorization and authorization.strip():
             credential = authorization.strip()
-            log_event(logging.INFO, "auth_source_selected", source="request_header:authorization")
+            log_event(
+                logging.INFO,
+                "auth_source_selected",
+                source="request_header:authorization",
+                credential_identity=build_credential_trace(
+                    credential,
+                    auth_source="request_header:authorization",
+                    credential_mode="authorization",
+                ),
+            )
             return credential, "request_header:authorization", "authorization"
 
         header_value = headers.get("x-bf-vk") or headers.get("X-BF-VK")
         if header_value and header_value.strip():
-            log_event(logging.INFO, "auth_source_selected", source="request_header:x-bf-vk")
-            return header_value.strip(), "request_header:x-bf-vk", "virtual_key"
+            credential = header_value.strip()
+            log_event(
+                logging.INFO,
+                "auth_source_selected",
+                source="request_header:x-bf-vk",
+                credential_identity=build_credential_trace(
+                    credential,
+                    auth_source="request_header:x-bf-vk",
+                    credential_mode="virtual_key",
+                ),
+            )
+            return credential, "request_header:x-bf-vk", "virtual_key"
 
     env_virtual_key = os.getenv("BIFROST_VIRTUAL_KEY", "").strip()
     if env_virtual_key:
-        log_event(logging.INFO, "auth_source_selected", source="environment:BIFROST_VIRTUAL_KEY")
+        log_event(
+            logging.INFO,
+            "auth_source_selected",
+            source="environment:BIFROST_VIRTUAL_KEY",
+            credential_identity=build_credential_trace(
+                env_virtual_key,
+                auth_source="environment:BIFROST_VIRTUAL_KEY",
+                credential_mode="virtual_key",
+            ),
+        )
         return env_virtual_key, "environment:BIFROST_VIRTUAL_KEY", "virtual_key"
 
     log_event(logging.ERROR, "auth_source_missing")

@@ -8,7 +8,7 @@ from typing import Any, Literal
 import httpx
 from mcp.server.mcpserver.exceptions import ToolError
 
-from .logging import log_event
+from .logging import build_credential_trace, log_event
 from .normalization import normalize_quota_payload
 from .settings import BifrostSettings
 
@@ -46,6 +46,11 @@ class BifrostClient:
             "upstream_quota_request",
             quota_url=self.settings.quota_url,
             auth_source=auth_source,
+            credential_identity=build_credential_trace(
+                credential,
+                auth_source=auth_source,
+                credential_mode=credential_mode,
+            ),
         )
         response = await self._client.get(self.settings.quota_url, headers=headers)
         if response.status_code >= 400:
@@ -54,6 +59,11 @@ class BifrostClient:
                 "upstream_quota_error",
                 quota_url=self.settings.quota_url,
                 auth_source=auth_source,
+                credential_identity=build_credential_trace(
+                    credential,
+                    auth_source=auth_source,
+                    credential_mode=credential_mode,
+                ),
                 status_code=response.status_code,
                 duration_ms=round((time.perf_counter() - started_at) * 1000, 2),
             )
@@ -69,6 +79,11 @@ class BifrostClient:
                 "upstream_quota_error",
                 quota_url=self.settings.quota_url,
                 auth_source=auth_source,
+                credential_identity=build_credential_trace(
+                    credential,
+                    auth_source=auth_source,
+                    credential_mode=credential_mode,
+                ),
                 error_type=type(exc).__name__,
                 duration_ms=round((time.perf_counter() - started_at) * 1000, 2),
             )
@@ -85,6 +100,11 @@ class BifrostClient:
             "upstream_quota_success",
             quota_url=self.settings.quota_url,
             auth_source=auth_source,
+            credential_identity=build_credential_trace(
+                credential,
+                auth_source=auth_source,
+                credential_mode=credential_mode,
+            ),
             status_code=response.status_code,
             budget_count=report.summary.budget_count,
             remaining_total=report.summary.remaining_total,
