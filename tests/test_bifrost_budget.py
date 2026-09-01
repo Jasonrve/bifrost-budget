@@ -162,7 +162,7 @@ async def test_server_exposes_health_route_and_tool_metadata() -> None:
     assert "get_quota" in tool_names
 
     tool = next(tool for tool in await server.list_tools() if tool.name == "get_quota")
-    assert "Authorization header" in (tool.description or "")
+    assert "BIFROST_AUTH_EXCHANGE_MAP" in (tool.description or "")
 
     app = server.streamable_http_app(streamable_http_path="/mcp", stateless_http=True)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
@@ -177,29 +177,40 @@ async def test_virtual_key_resolution_prefers_explicit_argument() -> None:
     class DummyContext:
         headers = {"x-bf-vk": "header-secret", "authorization": "Bearer auth-secret"}
 
-    resolved, source, mode = _resolve_credential("explicit-secret", DummyContext())
+    settings = BifrostSettings(api_base_url="https://bifrost.example.com")
+    resolved, source, mode, trace = _resolve_credential("explicit-secret", DummyContext(), settings)
     assert resolved == "explicit-secret"
     assert source == "tool_argument"
     assert mode == "virtual_key"
+    assert trace["token_fingerprint"] == fingerprint_value("explicit-secret")
 
 
 @pytest.mark.asyncio
-async def test_resolve_credential_prefers_authorization_header(caplog: pytest.LogCaptureFixture) -> None:
+async def test_resolve_credential_maps_authorization_header_to_virtual_key(caplog: pytest.LogCaptureFixture) -> None:
     configure_logging("INFO")
 
     class DummyContext:
-        headers = {"authorization": "Bearer auth-secret", "x-bf-vk": "header-secret"}
+        headers = {
+            "authorization": _make_jwt({"iss": "https://issuer.example.com", "sub": "user-123", "tenant": "tenant-42"}),
+            "x-bf-vk": "header-secret",
+        }
 
     caplog.set_level(logging.INFO, logger="bifrost_budget")
-    resolved, source, mode = _resolve_credential(None, DummyContext())
+    settings = BifrostSettings(
+        api_base_url="https://bifrost.example.com",
+        credential_exchange_map={"iss=https://issuer.example.com|sub=user-123": "vk-derived"},
+    )
+    resolved, source, mode, trace = _resolve_credential(None, DummyContext(), settings)
 
-    assert resolved == "Bearer auth-secret"
+    assert resolved == "vk-derived"
     assert source == "request_header:authorization"
-    assert mode == "authorization"
+    assert mode == "virtual_key"
+    assert trace["claims"] == {"iss": "https://issuer.example.com", "sub": "user-123", "tenant": "tenant-42"}
     log_text = "\n".join(record.getMessage() for record in caplog.records)
     assert '"event":"auth_source_selected"' in log_text
+    assert '"event":"auth_credential_exchanged"' in log_text
     assert '"credential_identity":' in log_text
-    assert 'auth-secret' not in log_text
+    assert 'user-123' in log_text
 
 
 @pytest.mark.asyncio
@@ -207,8 +218,29 @@ async def test_resolve_credential_falls_back_to_virtual_key_header() -> None:
     class DummyContext:
         headers = {"x-bf-vk": "header-secret"}
 
-    resolved, source, mode = _resolve_credential(None, DummyContext())
+    settings = BifrostSettings(api_base_url="https://bifrost.example.com")
+    resolved, source, mode, trace = _resolve_credential(None, DummyContext(), settings)
 
     assert resolved == "header-secret"
     assert source == "request_header:x-bf-vk"
     assert mode == "virtual_key"
+    assert trace["token_fingerprint"] == fingerprint_value("header-secret")
+
+
+@pytest.mark.asyncio
+async def test_resolve_credential_uses_default_virtual_key_for_authorization_when_no_map_exists(caplog: pytest.LogCaptureFixture) -> None:
+    configure_logging("INFO")
+
+    class DummyContext:
+        headers = {"authorization": _make_jwt({"iss": "https://issuer.example.com", "sub": "user-123"})}
+
+    settings = BifrostSettings(api_base_url="https://bifrost.example.com", default_virtual_key="vk-default")
+    caplog.set_level(logging.INFO, logger="bifrost_budget")
+    resolved, source, mode, trace = _resolve_credential(None, DummyContext(), settings)
+
+    assert resolved == "vk-default"
+    assert source == "request_header:authorization"
+    assert mode == "virtual_key"
+    assert trace["claims"] == {"iss": "https://issuer.example.com", "sub": "user-123"}
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert '"event":"auth_credential_defaulted"' in log_text

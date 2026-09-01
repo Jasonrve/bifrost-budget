@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, cast
 
 DEFAULT_API_BASE_URL = ""
@@ -24,6 +25,8 @@ class BifrostSettings:
     host: str = DEFAULT_HOST
     port: int = DEFAULT_HTTP_PORT
     mcp_path: str = DEFAULT_MCP_PATH
+    default_virtual_key: str | None = None
+    credential_exchange_map: dict[str, str] = field(default_factory=dict)
 
     @property
     def quota_url(self) -> str:
@@ -52,6 +55,8 @@ class BifrostSettings:
             raise ValueError("BIFROST_TRANSPORT must be 'streamable-http' or 'stdio'")
 
         transport_value = cast(Literal["streamable-http", "stdio"], resolved_transport)
+        resolved_default_virtual_key = os.getenv("BIFROST_VIRTUAL_KEY", "").strip() or None
+        resolved_exchange_map = _parse_exchange_map(os.getenv("BIFROST_AUTH_EXCHANGE_MAP", ""))
 
         return cls(
             api_base_url=resolved_api_base_url,
@@ -61,4 +66,25 @@ class BifrostSettings:
             host=(host or os.getenv("BIFROST_HOST", DEFAULT_HOST)).strip() or DEFAULT_HOST,
             port=int(port or os.getenv("BIFROST_PORT", DEFAULT_HTTP_PORT)),
             mcp_path=(mcp_path or os.getenv("BIFROST_MCP_PATH", DEFAULT_MCP_PATH)).strip() or DEFAULT_MCP_PATH,
+            default_virtual_key=resolved_default_virtual_key,
+            credential_exchange_map=resolved_exchange_map,
         )
+
+
+def _parse_exchange_map(raw_value: str) -> dict[str, str]:
+    normalized = raw_value.strip()
+    if not normalized:
+        return {}
+
+    payload = json.loads(normalized)
+    if not isinstance(payload, dict):
+        raise ValueError("BIFROST_AUTH_EXCHANGE_MAP must be a JSON object mapping claim selectors to virtual keys")
+
+    exchange_map: dict[str, str] = {}
+    for key, value in payload.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("BIFROST_AUTH_EXCHANGE_MAP keys must be non-empty strings")
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("BIFROST_AUTH_EXCHANGE_MAP values must be non-empty strings")
+        exchange_map[key.strip()] = value.strip()
+    return exchange_map

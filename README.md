@@ -18,7 +18,8 @@ The server exposes one primary tool:
 
 Authentication is read-only and self-service:
 
-- production callers should send an Authorization header to Bifrost, and this service forwards that header upstream for the quota lookup
+- production callers should send an Authorization header to Bifrost, and this service maps that JWT to a Bifrost-recognized virtual key before the quota lookup
+- JWT-to-virtual-key exchange for production callers is configured with `BIFROST_AUTH_EXCHANGE_MAP`, a JSON object whose keys are safe claim selectors such as `iss=https://issuer.example.com|sub=user-123` or `sub=user-123`
 - for local development or explicit non-production fallback, pass `virtual_key` to the tool directly, send `x-bf-vk` in the MCP request headers with a virtual key, or set `BIFROST_VIRTUAL_KEY` in the runtime environment
 
 The tool never returns the raw virtual key. It only returns derived quota data.
@@ -39,6 +40,7 @@ Optional:
 - `BIFROST_PORT` — defaults to `8080`
 - `BIFROST_MCP_PATH` — defaults to `/mcp`
 - `BIFROST_VIRTUAL_KEY` — fallback caller key for local development or explicit non-production use only
+- `BIFROST_AUTH_EXCHANGE_MAP` — JSON object mapping safe JWT claim selectors to Bifrost virtual keys for Authorization-header callers
 
 ## Local development
 
@@ -77,7 +79,7 @@ The server emits structured JSON logs to standard output for:
 - upstream quota requests and responses
 - errors
 
-The logs intentionally omit raw virtual keys and Authorization values; they record only the chosen auth path, a non-reversible token fingerprint for correlation, and safe JWT claim fields such as issuer, subject, and tenant when the token is already a JWT.
+The logs intentionally omit raw virtual keys and Authorization values; they record only the chosen auth path, a non-reversible token fingerprint for correlation, and safe JWT claim fields such as issuer, subject, and tenant when the token is already a JWT. When a JWT is mapped to a Bifrost virtual key, the logs note the mapping event and the selected selector, but never the raw token.
 
 ## Container
 
@@ -98,7 +100,7 @@ docker run --rm -p 8080:8080 \
 
 The environment-based key above is a fallback example for local/dev or explicit non-production use. Production deployments should rely on the caller's `Authorization` header path instead.
 
-The CI/publish pipeline also tags the image as `ghcr.io/jasonrve/bifrost-budget:auth-trace-1` for this auth-tracing release line.
+The CI/publish pipeline also tags the image as `ghcr.io/jasonrve/bifrost-budget:auth-exchange-1` for this JWT exchange release line.
 
 Health check:
 
@@ -196,7 +198,7 @@ These examples mirror the chart's container port, service port, and `/healthz`-b
 
 Clients can call `get_quota` and provide the virtual key in one of four ways:
 
-1. production path: Authorization header forwarded by Bifrost
+1. production path: Authorization header mapped via `BIFROST_AUTH_EXCHANGE_MAP`
 2. fallback request header: `x-bf-vk`
 3. fallback tool argument: `virtual_key`
 4. fallback environment variable: `BIFROST_VIRTUAL_KEY`
