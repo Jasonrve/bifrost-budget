@@ -94,6 +94,19 @@ def build_credential_trace(
     return trace
 
 
+def safe_text_preview(value: str | None, *, limit: int = 256) -> str | None:
+    if value is None:
+        return None
+
+    normalized = " ".join(value.split())
+    if not normalized:
+        return None
+
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 1] + "…"
+
+
 def log_event(level: int, event: str, **fields: Any) -> None:
     payload = {"event": event, **fields}
     get_logger().log(level, json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")))

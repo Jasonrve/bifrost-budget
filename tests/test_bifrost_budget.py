@@ -124,33 +124,6 @@ async def test_client_builds_expected_request_headers_and_url() -> None:
 
 
 @pytest.mark.asyncio
-async def test_client_forwards_authorization_header_when_present() -> None:
-    seen: dict[str, object] = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["authorization"] = request.headers.get("authorization")
-        seen["x-bf-vk"] = request.headers.get("x-bf-vk")
-        return httpx.Response(200, json={"budgets": [{"name": "caller", "limit": 20, "used": 5}]})
-
-    transport = httpx.MockTransport(handler)
-    client = httpx.AsyncClient(transport=transport, base_url="https://bifrost.example.com")
-    settings = BifrostSettings(api_base_url="https://bifrost.example.com")
-    try:
-        bifrost = BifrostClient(settings, client=client)
-        report = await bifrost.fetch_quota(
-            credential="Bearer auth-token",
-            credential_mode="authorization",
-            auth_source="request_header:authorization",
-        )
-    finally:
-        await client.aclose()
-
-    assert seen["authorization"] == "Bearer auth-token"
-    assert seen["x-bf-vk"] is None
-    assert report["summary"]["remaining_total"] == 15
-
-
-@pytest.mark.asyncio
 async def test_client_emits_structured_logs_for_request_and_success(caplog: pytest.LogCaptureFixture) -> None:
     configure_logging("INFO")
 
@@ -176,10 +149,43 @@ async def test_client_emits_structured_logs_for_request_and_success(caplog: pyte
     log_text = "\n".join(record.getMessage() for record in caplog.records)
     assert '"event":"upstream_quota_request"' in log_text
     assert '"event":"upstream_quota_success"' in log_text
-    assert '"token_fingerprint":"' in log_text
-    assert '"claims":{"iss":"https://issuer.example.com","sub":"user-123","tenant":"tenant-42"}' in log_text
+    assert '"outbound_auth_mode":"authorization"' in log_text
+    assert '"auth_headers":["authorization"]' in log_text
     assert token not in log_text
-    assert 'auth-secret' not in log_text
+
+
+@pytest.mark.asyncio
+async def test_client_logs_safe_401_details_before_raising(caplog: pytest.LogCaptureFixture) -> None:
+    configure_logging("INFO")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            401,
+            headers={"www-authenticate": 'Bearer realm="bifrost"', "content-type": "application/json"},
+            json={"error": "unauthorized", "hint": "use mapped virtual key"},
+        )
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(transport=transport, base_url="https://bifrost.example.com")
+    settings = BifrostSettings(api_base_url="https://bifrost.example.com")
+    caplog.set_level(logging.INFO, logger="bifrost_budget")
+    try:
+        bifrost = BifrostClient(settings, client=client)
+        with pytest.raises(Exception):
+            await bifrost.fetch_quota(
+                credential="Bearer auth-secret",
+                credential_mode="authorization",
+                auth_source="request_header:authorization",
+            )
+    finally:
+        await client.aclose()
+
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert '"event":"upstream_quota_error"' in log_text
+    assert '"status_code":401' in log_text
+    assert '"response_www_authenticate":"Bearer realm=\\"bifrost\\""' in log_text
+    assert '"response_body_preview":"{\\"error\\":\\"unauthorized\\",\\"hint\\":\\"use mapped virtual key\\"}"' in log_text
+    assert "auth-secret" not in log_text
 
 
 @pytest.mark.asyncio
@@ -189,8 +195,7 @@ async def test_server_exposes_health_route_and_tool_metadata() -> None:
     assert "get_quota" in tool_names
 
     tool = next(tool for tool in await server.list_tools() if tool.name == "get_quota")
-    assert "Authorization header" in (tool.description or "")
-    assert "BIFROST_AUTH_EXCHANGE_MAP" not in (tool.description or "")
+    assert "BIFROST_AUTH_EXCHANGE_MAP" in (tool.description or "")
 
     app = server.streamable_http_app(streamable_http_path="/mcp", stateless_http=True)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
@@ -214,7 +219,7 @@ async def test_virtual_key_resolution_prefers_explicit_argument() -> None:
 
 
 @pytest.mark.asyncio
-async def test_resolve_credential_uses_authorization_header_directly(caplog: pytest.LogCaptureFixture) -> None:
+async def test_resolve_credential_maps_authorization_header_to_virtual_key(caplog: pytest.LogCaptureFixture) -> None:
     configure_logging("INFO")
 
     class DummyContext:
@@ -224,15 +229,19 @@ async def test_resolve_credential_uses_authorization_header_directly(caplog: pyt
         }
 
     caplog.set_level(logging.INFO, logger="bifrost_budget")
-    settings = BifrostSettings(api_base_url="https://bifrost.example.com")
+    settings = BifrostSettings(
+        api_base_url="https://bifrost.example.com",
+        credential_exchange_map={"iss=https://issuer.example.com|sub=user-123": "vk-derived"},
+    )
     resolved, source, mode, trace = _resolve_credential(None, DummyContext(), settings)
 
-    assert resolved == DummyContext.headers["authorization"]
+    assert resolved == "vk-derived"
     assert source == "request_header:authorization"
-    assert mode == "authorization"
+    assert mode == "virtual_key"
     assert trace["claims"] == {"iss": "https://issuer.example.com", "sub": "user-123", "tenant": "tenant-42"}
     log_text = "\n".join(record.getMessage() for record in caplog.records)
     assert '"event":"auth_source_selected"' in log_text
+    assert '"event":"auth_credential_exchanged"' in log_text
     assert '"credential_identity":' in log_text
     assert 'user-123' in log_text
 
@@ -252,19 +261,19 @@ async def test_resolve_credential_falls_back_to_virtual_key_header() -> None:
 
 
 @pytest.mark.asyncio
-async def test_resolve_credential_uses_default_virtual_key_fallback_when_no_headers_exist(caplog: pytest.LogCaptureFixture) -> None:
+async def test_resolve_credential_uses_default_virtual_key_for_authorization_when_no_map_exists(caplog: pytest.LogCaptureFixture) -> None:
     configure_logging("INFO")
 
     class DummyContext:
-        headers = {}
+        headers = {"authorization": _make_jwt({"iss": "https://issuer.example.com", "sub": "user-123"})}
 
     settings = BifrostSettings(api_base_url="https://bifrost.example.com", default_virtual_key="vk-default")
     caplog.set_level(logging.INFO, logger="bifrost_budget")
     resolved, source, mode, trace = _resolve_credential(None, DummyContext(), settings)
 
     assert resolved == "vk-default"
-    assert source == "environment:BIFROST_VIRTUAL_KEY"
+    assert source == "request_header:authorization"
     assert mode == "virtual_key"
-    assert trace["token_fingerprint"] == fingerprint_value("vk-default")
+    assert trace["claims"] == {"iss": "https://issuer.example.com", "sub": "user-123"}
     log_text = "\n".join(record.getMessage() for record in caplog.records)
-    assert '"event":"auth_source_selected"' in log_text
+    assert '"event":"auth_credential_defaulted"' in log_text
