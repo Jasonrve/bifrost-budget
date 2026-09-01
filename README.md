@@ -19,7 +19,7 @@ The server exposes one primary tool:
 Authentication is read-only and self-service:
 
 - production callers should send an Authorization header to Bifrost, and this service maps that JWT to a Bifrost-recognized virtual key before the quota lookup
-- JWT-to-virtual-key exchange for production callers is configured with `BIFROST_AUTH_EXCHANGE_MAP`, a JSON object whose keys are safe claim selectors such as `iss=https://issuer.example.com|sub=user-123` or `sub=user-123`
+- JWT-to-virtual-key exchange for production callers is configured with `BIFROST_AUTH_EXCHANGE_MAP`, a JSON object whose keys are safe claim selectors such as `iss=https://issuer.example.com|sub=user-123`, `preferred_username=alice@example.com`, `email=alice@example.com`, or `sub=user-123`
 - for local development or explicit non-production fallback, pass `virtual_key` to the tool directly, send `x-bf-vk` in the MCP request headers with a virtual key, or set `BIFROST_VIRTUAL_KEY` in the runtime environment
 
 The tool never returns the raw virtual key. It only returns derived quota data.
@@ -80,7 +80,7 @@ The server emits structured JSON logs to standard output for:
 - upstream quota requests and responses
 - errors
 
-The logs intentionally omit raw virtual keys and Authorization values; they record only the chosen auth path, the selected outbound auth mode, auth header names, and safe upstream 401 metadata when present.
+The logs intentionally omit raw virtual keys and Authorization values; at debug level they also show the auth decision tree, including safe claims, redacted configured selector keys, each selector attempt, and the final auth decision. They record only the chosen auth path, the selected outbound auth mode, auth header names, and safe upstream 401 metadata when present.
 
 ## Container
 

@@ -220,30 +220,46 @@ async def test_virtual_key_resolution_prefers_explicit_argument() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_credential_maps_authorization_header_to_virtual_key(caplog: pytest.LogCaptureFixture) -> None:
-    configure_logging("INFO")
+    configure_logging("DEBUG")
 
     class DummyContext:
         headers = {
-            "authorization": _make_jwt({"iss": "https://issuer.example.com", "sub": "user-123", "tenant": "tenant-42"}),
+            "authorization": _make_jwt(
+                {
+                    "iss": "https://issuer.example.com",
+                    "sub": "user-123",
+                    "tenant": "tenant-42",
+                    "preferred_username": "alice@example.com",
+                }
+            ),
             "x-bf-vk": "header-secret",
         }
 
-    caplog.set_level(logging.INFO, logger="bifrost_budget")
+    caplog.set_level(logging.DEBUG, logger="bifrost_budget")
     settings = BifrostSettings(
         api_base_url="https://bifrost.example.com",
-        credential_exchange_map={"iss=https://issuer.example.com|sub=user-123": "vk-derived"},
+        credential_exchange_map={"preferred_username=alice@example.com": "vk-derived"},
     )
     resolved, source, mode, trace = _resolve_credential(None, DummyContext(), settings)
 
     assert resolved == "vk-derived"
     assert source == "request_header:authorization"
     assert mode == "virtual_key"
-    assert trace["claims"] == {"iss": "https://issuer.example.com", "sub": "user-123", "tenant": "tenant-42"}
+    assert trace["claims"] == {
+        "iss": "https://issuer.example.com",
+        "sub": "user-123",
+        "tenant": "tenant-42",
+        "preferred_username": "alice@example.com",
+    }
     log_text = "\n".join(record.getMessage() for record in caplog.records)
     assert '"event":"auth_source_selected"' in log_text
     assert '"event":"auth_credential_exchanged"' in log_text
+    assert '"event":"auth_decision_tree"' in log_text
+    assert '"event":"auth_selector_attempted"' in log_text
     assert '"credential_identity":' in log_text
+    assert '"configured_selector_keys":["preferred_username=*"]' in log_text
     assert 'user-123' in log_text
+    assert 'preferred_username=alice@example.com' in log_text
 
 
 @pytest.mark.asyncio
@@ -262,13 +278,13 @@ async def test_resolve_credential_falls_back_to_virtual_key_header() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_credential_uses_default_virtual_key_for_authorization_when_no_map_exists(caplog: pytest.LogCaptureFixture) -> None:
-    configure_logging("INFO")
+    configure_logging("DEBUG")
 
     class DummyContext:
         headers = {"authorization": _make_jwt({"iss": "https://issuer.example.com", "sub": "user-123"})}
 
     settings = BifrostSettings(api_base_url="https://bifrost.example.com", default_virtual_key="vk-default")
-    caplog.set_level(logging.INFO, logger="bifrost_budget")
+    caplog.set_level(logging.DEBUG, logger="bifrost_budget")
     resolved, source, mode, trace = _resolve_credential(None, DummyContext(), settings)
 
     assert resolved == "vk-default"
@@ -277,3 +293,38 @@ async def test_resolve_credential_uses_default_virtual_key_for_authorization_whe
     assert trace["claims"] == {"iss": "https://issuer.example.com", "sub": "user-123"}
     log_text = "\n".join(record.getMessage() for record in caplog.records)
     assert '"event":"auth_credential_defaulted"' in log_text
+
+
+@pytest.mark.asyncio
+async def test_resolve_credential_reports_full_missing_selector_tree(caplog: pytest.LogCaptureFixture) -> None:
+    configure_logging("DEBUG")
+
+    class DummyContext:
+        headers = {
+            "authorization": _make_jwt(
+                {
+                    "iss": "https://issuer.example.com",
+                    "sub": "user-123",
+                    "preferred_username": "alice@example.com",
+                    "email": "alice@example.com",
+                }
+            )
+        }
+
+    caplog.set_level(logging.DEBUG, logger="bifrost_budget")
+    settings = BifrostSettings(api_base_url="https://bifrost.example.com")
+
+    with pytest.raises(Exception) as excinfo:
+        _resolve_credential(None, DummyContext(), settings)
+
+    error_text = str(excinfo.value)
+    assert "Attempted selectors:" in error_text
+    assert "Configured selectors:" in error_text
+    assert "No BIFROST_VIRTUAL_KEY fallback is configured." in error_text
+
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert '"event":"auth_decision_tree"' in log_text
+    assert '"event":"auth_selector_attempted"' in log_text
+    assert '"event":"auth_decision_failed"' in log_text
+    assert 'preferred_username=alice@example.com' in log_text
+    assert 'alice@example.com' in log_text

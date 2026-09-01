@@ -10,7 +10,24 @@ from typing import Any, Literal
 
 LOGGER_NAME = "bifrost_budget"
 DEFAULT_LOG_LEVEL = "INFO"
-SAFE_JWT_CLAIM_KEYS = ("iss", "sub", "tid", "tenant", "tenant_id", "org_id")
+SAFE_JWT_CLAIM_KEYS = (
+    "iss",
+    "sub",
+    "tid",
+    "tenant",
+    "tenant_id",
+    "org_id",
+    "email",
+    "upn",
+    "preferred_username",
+    "oid",
+    "client_id",
+    "appid",
+    "azp",
+    "uid",
+    "user_id",
+    "name",
+)
 
 
 def configure_logging(level: str | None = None) -> logging.Logger:
