@@ -98,7 +98,7 @@ docker run --rm -p 8080:8080 \
 
 The environment-based key above is a fallback example for local/dev or explicit non-production use. Production deployments should rely on the caller's `Authorization` header path instead.
 
-The CI/publish pipeline also tags the image as `ghcr.io/jasonrve/bifrost-budget:auth-forwarding` for this auth-forwarding release line.
+The CI/publish pipeline also tags the image as `ghcr.io/jasonrve/bifrost-budget:auth-forwarding-2` for this auth-forwarding release line.
 
 Health check:
 
