@@ -1,0 +1,6 @@
+apiVersion: v2
+name: bifrost-budget
+description: Read-only MCP server for Bifrost budget and quota snapshots
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

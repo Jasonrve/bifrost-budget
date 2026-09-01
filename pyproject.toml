@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bifrost-budget"
+version = "0.1.0"
+description = "Read-only MCP server for Bifrost credit and quota snapshots"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{name = "Jasonrve", email = "jasonrve@gmail.com"}]
+dependencies = [
+  "fastapi>=0.141.1",
+  "httpx>=0.28.1",
+  "mcp>=2.1.1",
+  "pydantic>=2.11",
+  "uvicorn>=0.34.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=9.0",
+  "pytest-asyncio>=1.0",
+]
+
+[project.scripts]
+bifrost-budget = "bifrost_budget.__main__:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["src"]

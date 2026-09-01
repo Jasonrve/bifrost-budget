@@ -1,0 +1,53 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/jasonrve/bifrost-budget
+  tag: ""
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: bifrost-budget.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi
+
+env:
+  apiBaseUrl: https://bifrost.example.com
+  transport: streamable-http
+  mcpPath: /mcp
+  timeoutSeconds: 15
+  virtualKey:
+    value: ""
+    existingSecret: ""
+    existingSecretKey: BIFROST_VIRTUAL_KEY
+
+podAnnotations: {}
+podLabels: {}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
