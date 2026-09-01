@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-from typing import Any
+import logging
+import os
+from typing import Any, Literal
 
 from fastapi.responses import JSONResponse, Response
-
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.context import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
 from .client import BifrostClient
+from .logging import log_event
 from .settings import BifrostSettings
 
 SERVER_NAME = "bifrost-budget"
@@ -38,7 +40,8 @@ def create_server() -> MCPServer[object]:
         title="Get Bifrost quota snapshot",
         description=(
             "Return the caller's Bifrost quota snapshot by calling the configured quota endpoint "
-            "with an x-bf-vk header, an Authorization bearer token, or an explicit virtual_key argument."
+            "with the upstream Authorization header when present, or with an x-bf-vk header for "
+            "explicit virtual_key / non-production fallback use."
         ),
         structured_output=True,
     )
@@ -48,40 +51,59 @@ def create_server() -> MCPServer[object]:
         ctx: Context[object] | None = None,
     ) -> dict[str, Any]:
         settings = BifrostSettings.from_env(api_base_url=api_base_url)
-        resolved_virtual_key, auth_source = _resolve_virtual_key(virtual_key, ctx)
-        async with BifrostClient(settings) as client:
-            return await client.fetch_quota(virtual_key=resolved_virtual_key, auth_source=auth_source)
+        credential, auth_source, credential_mode = _resolve_credential(virtual_key, ctx)
+        log_event(
+            logging.INFO,
+            "tool_invocation",
+            tool="get_quota",
+            auth_source=auth_source,
+            transport=settings.transport,
+            quota_url=settings.quota_url,
+        )
+        try:
+            async with BifrostClient(settings) as client:
+                return await client.fetch_quota(
+                    credential=credential,
+                    credential_mode=credential_mode,
+                    auth_source=auth_source,
+                )
+        except ToolError as exc:
+            log_event(logging.ERROR, "tool_error", tool="get_quota", auth_source=auth_source, error=str(exc))
+            raise
 
     return server
 
 
-def _resolve_virtual_key(
+def _resolve_credential(
     explicit: str | None,
     ctx: Context[object] | None,
-) -> tuple[str, str]:
+) -> tuple[str, str, Literal["authorization", "virtual_key"]]:
     if explicit and explicit.strip():
-        return explicit.strip(), "tool_argument"
+        resolved = explicit.strip()
+        log_event(logging.INFO, "auth_source_selected", source="tool_argument")
+        return resolved, "tool_argument", "virtual_key"
 
     headers = ctx.headers if ctx is not None else None
     if headers:
+        authorization = headers.get("authorization") or headers.get("Authorization")
+        if authorization and authorization.strip():
+            credential = authorization.strip()
+            log_event(logging.INFO, "auth_source_selected", source="request_header:authorization")
+            return credential, "request_header:authorization", "authorization"
+
         header_value = headers.get("x-bf-vk") or headers.get("X-BF-VK")
         if header_value and header_value.strip():
-            return header_value.strip(), "request_header:x-bf-vk"
-
-        authorization = headers.get("authorization") or headers.get("Authorization")
-        if authorization and authorization.lower().startswith("bearer "):
-            token = authorization.split(None, 1)[1].strip()
-            if token:
-                return token, "request_header:authorization"
-
-    import os
+            log_event(logging.INFO, "auth_source_selected", source="request_header:x-bf-vk")
+            return header_value.strip(), "request_header:x-bf-vk", "virtual_key"
 
     env_virtual_key = os.getenv("BIFROST_VIRTUAL_KEY", "").strip()
     if env_virtual_key:
-        return env_virtual_key, "environment:BIFROST_VIRTUAL_KEY"
+        log_event(logging.INFO, "auth_source_selected", source="environment:BIFROST_VIRTUAL_KEY")
+        return env_virtual_key, "environment:BIFROST_VIRTUAL_KEY", "virtual_key"
 
+    log_event(logging.ERROR, "auth_source_missing")
     raise ToolError(
-        "No virtual key was provided. Supply virtual_key, send x-bf-vk or Authorization: Bearer in the request, or set BIFROST_VIRTUAL_KEY."
+        "No virtual key was provided. Supply virtual_key, send x-bf-vk or Authorization: Bearer *** the request, or set BIFROST_VIRTUAL_KEY."
     )
 
 

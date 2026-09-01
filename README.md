@@ -18,9 +18,8 @@ The server exposes one primary tool:
 
 Authentication is read-only and self-service:
 
-- pass `virtual_key` to the tool directly, or
-- send `x-bf-vk: <virtual key>` in the MCP request headers, or
-- set `BIFROST_VIRTUAL_KEY` in the runtime environment
+- production callers should send an Authorization header to Bifrost, and this service forwards that header upstream for the quota lookup
+- for local development or explicit non-production fallback, pass `virtual_key` to the tool directly, send `x-bf-vk` in the MCP request headers with a virtual key, or set `BIFROST_VIRTUAL_KEY` in the runtime environment
 
 The tool never returns the raw virtual key. It only returns derived quota data.
 
@@ -34,11 +33,12 @@ Optional:
 
 - `BIFROST_QUOTA_PATH` — defaults to `/api/governance/virtual-keys/quota`
 - `BIFROST_TIMEOUT_SECONDS` — defaults to `15`
+- `BIFROST_LOG_LEVEL` — defaults to `INFO`; controls the structured application logs
 - `BIFROST_TRANSPORT` — `streamable-http` (default) or `stdio`
 - `BIFROST_HOST` — defaults to `0.0.0.0`
 - `BIFROST_PORT` — defaults to `8080`
 - `BIFROST_MCP_PATH` — defaults to `/mcp`
-- `BIFROST_VIRTUAL_KEY` — fallback caller key for local development only
+- `BIFROST_VIRTUAL_KEY` — fallback caller key for local development or explicit non-production use only
 
 ## Local development
 
@@ -57,6 +57,8 @@ export BIFROST_VIRTUAL_KEY=vk_...
 uv run bifrost-budget
 ```
 
+In production, prefer the caller's `Authorization` header path and do not rely on a static `BIFROST_VIRTUAL_KEY` unless you are intentionally using a fallback.
+
 Run the server over stdio:
 
 ```bash
@@ -64,6 +66,18 @@ export BIFROST_TRANSPORT=stdio
 export BIFROST_API_BASE_URL=https://bifrost.example.com
 uv run bifrost-budget
 ```
+
+## Logging
+
+The server emits structured JSON logs to standard output for:
+
+- startup
+- auth source selection
+- tool invocation
+- upstream quota requests and responses
+- errors
+
+The logs intentionally omit raw virtual keys and Authorization values; they only record the chosen auth path and the outcome.
 
 ## Container
 
@@ -82,6 +96,10 @@ docker run --rm -p 8080:8080 \
   bifrost-budget:local
 ```
 
+The environment-based key above is a fallback example for local/dev or explicit non-production use. Production deployments should rely on the caller's `Authorization` header path instead.
+
+The CI/publish pipeline also tags the image as `ghcr.io/jasonrve/bifrost-budget:auth-forwarding` for this auth-forwarding release line.
+
 Health check:
 
 ```bash
@@ -96,26 +114,94 @@ Install:
 
 ```bash
 helm upgrade --install bifrost-budget charts/bifrost-budget \
-  --set env.apiBaseUrl=https://bifrost.example.com \
-  --set env.virtualKey.existingSecret=bifrost-budget-vk
+  --namespace bifrost-budget \
+  --create-namespace \
+  --set image.tag=latest \
+  --set ingress.enabled=true \
+  --set ingress.className=traefik \
+  --set ingress.hosts[0].host=bifrost-budget.example.internal \
+  --set env.apiBaseUrl=https://bifrost.oly.workside.win
 ```
 
-Recommended secret:
+If you need an explicit fallback key for local/dev or other non-production use, add a secret and wire it into `env.virtualKey.existingSecret`:
 
 ```bash
 kubectl create secret generic bifrost-budget-vk \
   --from-literal=BIFROST_VIRTUAL_KEY=vk_...
 ```
 
+Then install with `--set env.virtualKey.existingSecret=bifrost-budget-vk`.
+
 The chart configures readiness and liveness probes against `/healthz` and exposes the MCP server on port 8080.
+
+## Kubernetes examples
+
+The Helm chart is the primary production path, but these plain Kubernetes manifests show the same container wiring in a copy-paste friendly form. They use the GHCR image published by CI and keep auth header-first, so no static Bifrost token is required for production use.
+
+Deployment:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bifrost-budget
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bifrost-budget
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bifrost-budget
+    spec:
+      containers:
+        - name: bifrost-budget
+          image: ghcr.io/jasonrve/bifrost-budget:latest
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: BIFROST_API_BASE_URL
+              value: https://bifrost.example.com
+            - name: BIFROST_TRANSPORT
+              value: streamable-http
+            - name: BIFROST_MCP_PATH
+              value: /mcp
+            - name: BIFROST_TIMEOUT_SECONDS
+              value: "15"
+```
+
+Service:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: bifrost-budget
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: bifrost-budget
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+```
+
+These examples mirror the chart's container port, service port, and `/healthz`-based probes; use the Helm chart when you want the full production defaults, probes, and optional non-production secret wiring.
 
 ## Usage from an MCP client
 
-Clients can call `get_quota` and provide the virtual key in one of three ways:
+Clients can call `get_quota` and provide the virtual key in one of four ways:
 
-1. tool argument: `virtual_key`
-2. request header: `x-bf-vk`
-3. environment variable: `BIFROST_VIRTUAL_KEY`
+1. production path: Authorization header forwarded by Bifrost
+2. fallback request header: `x-bf-vk`
+3. fallback tool argument: `virtual_key`
+4. fallback environment variable: `BIFROST_VIRTUAL_KEY`
+
+The fallback paths are intended for local/dev or explicit non-production use.
 
 The response includes normalized budget rows and a summary with derived totals and remaining values.
 
