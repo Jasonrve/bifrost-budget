@@ -19,20 +19,6 @@ SERVER_INSTRUCTIONS = (
     "Use the get_quota tool to inspect the caller's own quota information. "
     "This server is strictly read-only and never mutates Bifrost state."
 )
-AUTH_SELECTOR_PREFIXES = ("iss", "tid", "tenant", "tenant_id", "org_id")
-AUTH_SELECTOR_SINGLE_CLAIMS = (
-    "sub",
-    "email",
-    "upn",
-    "preferred_username",
-    "oid",
-    "client_id",
-    "appid",
-    "azp",
-    "uid",
-    "user_id",
-    "name",
-)
 
 
 def create_server() -> MCPServer[object]:
@@ -53,10 +39,8 @@ def create_server() -> MCPServer[object]:
         title="Get Bifrost quota snapshot",
         description=(
             "Return the caller's Bifrost quota snapshot by calling the configured quota endpoint "
-            "with an Authorization header when present, then exchange that identity into a "
-            "Bifrost-recognized virtual key using BIFROST_AUTH_EXCHANGE_MAP or a configured "
-            "BIFROST_VIRTUAL_KEY fallback. Explicit virtual_key and x-bf-vk remain available for "
-            "local and non-production use."
+            "with the caller's Authorization header when present. Explicit virtual_key, x-bf-vk, "
+            "and BIFROST_VIRTUAL_KEY remain available for local and non-production fallback use."
         ),
         structured_output=True,
     )
@@ -134,7 +118,6 @@ def _resolve_credential(
                 auth_source="request_header:authorization",
                 credential_mode="authorization",
             )
-            credential = _exchange_authorization_credential(authorization, settings, authorization_trace)
             log_event(
                 logging.INFO,
                 "auth_source_selected",
@@ -144,12 +127,12 @@ def _resolve_credential(
             log_event(
                 logging.DEBUG,
                 "auth_decision_complete",
-                decision="authorization_exchange",
+                decision="authorization_passthrough",
                 auth_source="request_header:authorization",
-                outbound_auth_mode="virtual_key",
+                outbound_auth_mode="authorization",
                 credential_identity=authorization_trace,
             )
-            return credential, "request_header:authorization", "virtual_key", authorization_trace
+            return authorization, "request_header:authorization", "authorization", authorization_trace
 
         header_value = headers.get("x-bf-vk") or headers.get("X-BF-VK")
         if header_value and header_value.strip():
@@ -200,141 +183,13 @@ def _resolve_credential(
 
     log_event(logging.ERROR, "auth_source_missing")
     raise ToolError(
-        "No Bifrost credential was provided. Supply virtual_key, send x-bf-vk, send an Authorization header that matches one of the configured safe-claim selectors, or set BIFROST_VIRTUAL_KEY."
+        "No Bifrost credential was provided. Supply virtual_key, send x-bf-vk, send an Authorization header for passthrough, or set BIFROST_VIRTUAL_KEY."
     )
-
-
-def _exchange_authorization_credential(
-    authorization: str,
-    settings: BifrostSettings,
-    authorization_trace: dict[str, Any],
-) -> str:
-    candidates = _authorization_exchange_candidates(authorization_trace)
-    configured_selectors = _redacted_configured_selectors(settings.credential_exchange_map)
-    log_event(
-        logging.DEBUG,
-        "auth_decision_tree",
-        caller_identity=authorization_trace,
-        configured_selector_keys=configured_selectors,
-        attempted_selector_count=len(candidates),
-        has_virtual_key_fallback=bool(settings.default_virtual_key),
-    )
-    for index, (selector, source_fields) in enumerate(candidates, start=1):
-        mapped = settings.credential_exchange_map.get(selector)
-        log_event(
-            logging.DEBUG,
-            "auth_selector_attempted",
-            selector=selector,
-            selector_index=index,
-            source_fields=source_fields,
-            matched=bool(mapped and mapped.strip()),
-        )
-        if mapped and mapped.strip():
-            resolved = mapped.strip()
-            log_event(
-                logging.INFO,
-                "auth_credential_exchanged",
-                source="BIFROST_AUTH_EXCHANGE_MAP",
-                selector=selector,
-                selector_index=index,
-                caller_identity=authorization_trace,
-                credential_identity=build_credential_trace(
-                    resolved,
-                    auth_source="request_header:authorization",
-                    credential_mode="virtual_key",
-                ),
-            )
-            return resolved
-
-    if settings.default_virtual_key:
-        log_event(
-            logging.DEBUG,
-            "auth_credential_defaulted",
-            source="BIFROST_VIRTUAL_KEY",
-            caller_identity=authorization_trace,
-            credential_identity=build_credential_trace(
-                settings.default_virtual_key,
-                auth_source="request_header:authorization",
-                credential_mode="virtual_key",
-            ),
-        )
-        return settings.default_virtual_key
-
-    log_event(
-        logging.ERROR,
-        "auth_decision_failed",
-        caller_identity=authorization_trace,
-        configured_selector_keys=configured_selectors,
-        attempted_selectors=[selector for selector, _ in candidates],
-        has_virtual_key_fallback=False,
-    )
-    raise ToolError(
-        "Authorization header received but no BIFROST_AUTH_EXCHANGE_MAP entry matched its safe claims. "
-        f"Attempted selectors: {[selector for selector, _ in candidates] or ['<none>']}. "
-        f"Configured selectors: {configured_selectors or ['<none>']}. "
-        "No BIFROST_VIRTUAL_KEY fallback is configured."
-    )
-
-
-def _authorization_exchange_candidates(trace: dict[str, Any]) -> list[tuple[str, list[str]]]:
-    claims = trace.get("claims")
-    if not isinstance(claims, dict):
-        return []
-
-    candidates: list[tuple[str, list[str]]] = []
-
-    claim_values = {
-        key: value
-        for key, value in claims.items()
-        if isinstance(value, (str, int, float, bool)) and value not in ("", None)
-    }
-
-    identity_fields = [key for key in AUTH_SELECTOR_SINGLE_CLAIMS if key in claim_values]
-    for prefix in AUTH_SELECTOR_PREFIXES:
-        if prefix not in claim_values:
-            continue
-        prefix_value = claim_values[prefix]
-        for field in identity_fields:
-            if field == prefix:
-                continue
-            candidates.append((f"{prefix}={prefix_value}|{field}={claim_values[field]}", [prefix, field]))
-
-    for field in identity_fields:
-        candidates.append((f"{field}={claim_values[field]}", [field]))
-
-    return _dedupe_candidates(candidates)
-
-
-def _redacted_configured_selectors(exchange_map: dict[str, str]) -> list[str]:
-    return [_redact_selector_key(selector) for selector in sorted(exchange_map)]
-
-
-def _redact_selector_key(selector: str) -> str:
-    parts = selector.split("|")
-    redacted_parts: list[str] = []
-    for part in parts:
-        if "=" not in part:
-            redacted_parts.append(part)
-            continue
-        key, _value = part.split("=", 1)
-        redacted_parts.append(f"{key}=*")
-    return "|".join(redacted_parts)
-
-
-def _dedupe_candidates(candidates: list[tuple[str, list[str]]]) -> list[tuple[str, list[str]]]:
-    seen: set[str] = set()
-    deduped: list[tuple[str, list[str]]] = []
-    for selector, source_fields in candidates:
-        if selector in seen:
-            continue
-        seen.add(selector)
-        deduped.append((selector, source_fields))
-    return deduped
 
 
 def _auth_decision_label(auth_source: str, credential_mode: Literal["authorization", "virtual_key"]) -> str:
-    if auth_source == "request_header:authorization" and credential_mode == "virtual_key":
-        return "authorization_exchange_map"
+    if auth_source == "request_header:authorization" and credential_mode == "authorization":
+        return "authorization_passthrough"
     if auth_source == "request_header:x-bf-vk":
         return "request_header_virtual_key"
     if auth_source == "environment:BIFROST_VIRTUAL_KEY":
