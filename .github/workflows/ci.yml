@@ -51,4 +51,4 @@ jobs:
           tags: |
             ghcr.io/jasonrve/bifrost-budget:${{ github.sha }}
             ghcr.io/jasonrve/bifrost-budget:latest
-            ghcr.io/jasonrve/bifrost-budget:auth-exchange-1
+            ghcr.io/jasonrve/bifrost-budget:auth-identity-1
