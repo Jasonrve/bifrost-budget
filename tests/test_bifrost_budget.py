@@ -7,6 +7,7 @@ import logging
 
 import httpx
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 from bifrost_budget.client import BifrostClient
 from bifrost_budget.logging import build_credential_trace, configure_logging, fingerprint_value
@@ -345,3 +346,36 @@ async def test_user_usage_returns_empty_for_malformed_budget_entries() -> None:
 
     assert report["budgets"] == []
     assert report["summary"]["budget_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_user_usage_raises_tool_error_when_pingidentity_user_has_no_match(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    configure_logging("INFO")
+    caplog.set_level(logging.INFO, logger="bifrost_budget")
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["authorization"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"users": [{"name": "different-user@example.com"}]})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://bifrost.example.com")
+    try:
+        bifrost = BifrostClient(BifrostSettings(api_base_url="https://bifrost.example.com"), client=client)
+        with pytest.raises(ToolError, match="No Bifrost governance user matched the authenticated PingIdentity user"):
+            await bifrost.fetch_user_usage(
+                admin_api_key="admin-secret",
+                user_identifier="pingidentity-user@example.com",
+            )
+    finally:
+        await client.aclose()
+
+    assert seen["url"] == "https://bifrost.example.com/api/governance/users?limit=20"
+    assert seen["authorization"] == "Bearer admin-secret"
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert '"event":"user_lookup_match"' in log_text
+    assert '"match_count":0' in log_text
+    assert "admin-secret" not in log_text
+    assert "pingidentity-user@example.com" not in log_text
