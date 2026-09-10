@@ -9,7 +9,7 @@ from mcp.server.mcpserver.context import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
 from .client import BifrostClient
-from .logging import build_credential_trace, log_event
+from .logging import build_credential_trace, extract_identity_from_authorization, log_event
 from .settings import BifrostSettings
 
 SERVER_NAME = "bifrost-budget"
@@ -57,7 +57,7 @@ def create_server() -> MCPServer[object]:
             tool="get_quota",
             auth_source=auth_source,
             auth_decision=_auth_decision_label(auth_source, credential_mode),
-            caller_identity=caller_identity,
+            caller_identity={key: value for key, value in caller_identity.items() if key != "identity"},
             credential_identity=build_credential_trace(
                 credential,
                 auth_source=auth_source,
@@ -69,10 +69,13 @@ def create_server() -> MCPServer[object]:
         )
         try:
             async with BifrostClient(settings) as client:
-                return await client.fetch_quota(
-                    credential=credential,
-                    credential_mode=credential_mode,
-                    auth_source=auth_source,
+                if credential_mode != "authorization":
+                    raise ToolError("An incoming PingIdentity Authorization header is required")
+                if not settings.admin_api_key:
+                    raise ToolError("BIFROST_ADMIN_API_KEY must be configured")
+                return await client.fetch_user_usage(
+                    admin_api_key=settings.admin_api_key,
+                    user_identifier=caller_identity["identity"],
                 )
         except ToolError as exc:
             log_event(logging.ERROR, "tool_error", tool="get_quota", auth_source=auth_source, error=str(exc))
@@ -132,7 +135,16 @@ def _resolve_credential(
                 outbound_auth_mode="authorization",
                 credential_identity=authorization_trace,
             )
-            return authorization, "request_header:authorization", "authorization", authorization_trace
+            identity = extract_identity_from_authorization(authorization)
+            if not identity:
+                raise ToolError("Authorization token did not contain a PingIdentity user name")
+            authorization_trace["identity_fingerprint"] = build_credential_trace(
+                identity, auth_source="identity", credential_mode="virtual_key"
+            )["token_fingerprint"]
+            return authorization, "request_header:authorization", "authorization", {
+                **authorization_trace,
+                "identity": identity,
+            }
 
         header_value = headers.get("x-bf-vk") or headers.get("X-BF-VK")
         if header_value and header_value.strip():

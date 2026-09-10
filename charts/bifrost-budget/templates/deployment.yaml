@@ -53,6 +53,13 @@ spec:
                   name: {{ .Values.env.virtualKey.existingSecret | quote }}
                   key: {{ .Values.env.virtualKey.existingSecretKey | quote }}
             {{- end }}
+            {{- if .Values.env.adminApiKey.existingSecret }}
+            - name: BIFROST_ADMIN_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.env.adminApiKey.existingSecret | quote }}
+                  key: {{ .Values.env.adminApiKey.existingSecretKey | quote }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz

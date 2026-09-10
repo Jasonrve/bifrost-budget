@@ -106,9 +106,29 @@ def build_credential_trace(
         trace["token_fingerprint"] = fingerprint_value(token)
         claims = _decode_jwt_claims(token)
         if claims:
-            trace["claims"] = claims
+            trace["claim_keys"] = sorted(claims)
+            identity = extract_identity_name(claims)
+            if identity:
+                trace["identity_fingerprint"] = fingerprint_value(identity)
 
     return trace
+
+
+def extract_identity_name(claims: dict[str, Any] | None) -> str | None:
+    if not claims:
+        return None
+    for key in ("name", "preferred_username", "email", "upn", "sub", "uid", "user_id"):
+        value = claims.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def extract_identity_from_authorization(authorization: str | None) -> str | None:
+    if not authorization:
+        return None
+    _, token = _split_authorization(authorization)
+    return extract_identity_name(_decode_jwt_claims(token))
 
 
 def safe_text_preview(value: str | None, *, limit: int = 256) -> str | None:

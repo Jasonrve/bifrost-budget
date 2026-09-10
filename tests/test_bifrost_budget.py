@@ -76,11 +76,8 @@ async def test_build_credential_trace_redacts_authorization_token_and_extracts_s
     assert trace["token_present"] is True
     assert trace["scheme"] == "Bearer"
     assert trace["token_fingerprint"] == fingerprint_value(token)
-    assert trace["claims"] == {
-        "iss": "https://issuer.example.com",
-        "sub": "user-123",
-        "tenant": "tenant-42",
-    }
+    assert trace["claim_keys"] == ["iss", "sub", "tenant"]
+    assert trace["identity_fingerprint"] == fingerprint_value("user-123")
     assert token not in json.dumps(trace)
     assert "signature" not in json.dumps(trace)
 
@@ -179,7 +176,7 @@ async def test_client_emits_structured_logs_for_request_and_success(caplog: pyte
     assert '"outbound_auth_mode":"authorization"' in log_text
     assert '"auth_headers":["authorization"]' in log_text
     assert token not in log_text
-    assert 'user-123' in log_text
+    assert 'user-123' not in log_text
 
 
 @pytest.mark.asyncio
@@ -264,16 +261,13 @@ async def test_resolve_credential_uses_authorization_header_directly(caplog: pyt
     assert resolved == DummyContext.headers["authorization"]
     assert source == "request_header:authorization"
     assert mode == "authorization"
-    assert trace["claims"] == {
-        "iss": "https://issuer.example.com",
-        "sub": "user-123",
-        "tenant": "tenant-42",
-    }
+    assert trace["claim_keys"] == ["iss", "sub", "tenant"]
+    assert trace["identity"] == "user-123"
     log_text = "\n".join(record.getMessage() for record in caplog.records)
     assert '"event":"auth_source_selected"' in log_text
     assert '"event":"auth_decision_complete"' in log_text
     assert '"outbound_auth_mode":"authorization"' in log_text
-    assert 'user-123' in log_text
+    assert 'user-123' not in log_text
 
 
 @pytest.mark.asyncio
@@ -307,3 +301,47 @@ async def test_resolve_credential_uses_default_virtual_key_fallback_when_no_head
     assert trace["token_fingerprint"] == fingerprint_value("vk-default")
     log_text = "\n".join(record.getMessage() for record in caplog.records)
     assert '"event":"auth_source_selected"' in log_text
+
+
+@pytest.mark.asyncio
+async def test_user_usage_uses_admin_key_and_ping_identity_separately() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["authorization"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"users": [{
+            "name": "alice@example.com",
+            "access_profiles": [{"budgets": [{"name": "daily", "limit": 100, "current_usage": 27}]}],
+        }]})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://bifrost.example.com")
+    try:
+        bifrost = BifrostClient(BifrostSettings(api_base_url="https://bifrost.example.com"), client=client)
+        report = await bifrost.fetch_user_usage(admin_api_key="admin-secret", user_identifier="alice@example.com")
+    finally:
+        await client.aclose()
+
+    assert seen["url"] == "https://bifrost.example.com/api/governance/users?limit=20"
+    assert seen["authorization"] == "Bearer admin-secret"
+    assert report["budgets"][0]["consumed"] == 27
+    assert report["summary"]["remaining_total"] == 73
+
+
+@pytest.mark.asyncio
+async def test_user_usage_returns_empty_for_malformed_budget_entries() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"users": [{
+            "name": "alice",
+            "access_profiles": [{"budgets": [{"name": "missing-usage"}, "not-a-budget"]}],
+        }]})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://bifrost.example.com")
+    try:
+        bifrost = BifrostClient(BifrostSettings(api_base_url="https://bifrost.example.com"), client=client)
+        report = await bifrost.fetch_user_usage(admin_api_key="admin-secret", user_identifier="alice")
+    finally:
+        await client.aclose()
+
+    assert report["budgets"] == []
+    assert report["summary"]["budget_count"] == 0

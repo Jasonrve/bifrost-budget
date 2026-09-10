@@ -6,6 +6,7 @@ from typing import Literal, cast
 
 DEFAULT_API_BASE_URL = ""
 DEFAULT_QUOTA_PATH = "/api/governance/virtual-keys/quota"
+DEFAULT_USERS_PATH = "/api/governance/users?limit=20"
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_HTTP_PORT = 8080
 DEFAULT_MCP_PATH = "/mcp"
@@ -19,16 +20,22 @@ class BifrostSettings:
 
     api_base_url: str
     quota_path: str = DEFAULT_QUOTA_PATH
+    users_path: str = DEFAULT_USERS_PATH
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     transport: Literal["streamable-http", "stdio"] = DEFAULT_TRANSPORT
     host: str = DEFAULT_HOST
     port: int = DEFAULT_HTTP_PORT
     mcp_path: str = DEFAULT_MCP_PATH
     default_virtual_key: str | None = None
+    admin_api_key: str | None = None
 
     @property
     def quota_url(self) -> str:
         return f"{self.api_base_url.rstrip('/')}/{self.quota_path.lstrip('/')}"
+
+    @property
+    def users_url(self) -> str:
+        return f"{self.api_base_url.rstrip('/')}/{self.users_path.lstrip('/')}"
 
     @classmethod
     def from_env(
@@ -58,10 +65,12 @@ class BifrostSettings:
         return cls(
             api_base_url=resolved_api_base_url,
             quota_path=(quota_path or os.getenv("BIFROST_QUOTA_PATH", DEFAULT_QUOTA_PATH)).strip() or DEFAULT_QUOTA_PATH,
+            users_path=os.getenv("BIFROST_USERS_PATH", DEFAULT_USERS_PATH).strip() or DEFAULT_USERS_PATH,
             timeout_seconds=float(timeout_seconds or os.getenv("BIFROST_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS)),
             transport=transport_value,
             host=(host or os.getenv("BIFROST_HOST", DEFAULT_HOST)).strip() or DEFAULT_HOST,
             port=int(port or os.getenv("BIFROST_PORT", DEFAULT_HTTP_PORT)),
             mcp_path=(mcp_path or os.getenv("BIFROST_MCP_PATH", DEFAULT_MCP_PATH)).strip() or DEFAULT_MCP_PATH,
             default_virtual_key=resolved_default_virtual_key,
+            admin_api_key=os.getenv("BIFROST_ADMIN_API_KEY", "").strip() or None,
         )

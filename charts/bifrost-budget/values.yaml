@@ -38,6 +38,9 @@ env:
     value: ""
     existingSecret: ""
     existingSecretKey: BIFROST_VIRTUAL_KEY
+  adminApiKey:
+    existingSecret: ""
+    existingSecretKey: BIFROST_ADMIN_API_KEY
 
 podAnnotations: {}
 podLabels: {}

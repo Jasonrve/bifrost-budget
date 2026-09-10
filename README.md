@@ -1,7 +1,7 @@
 Bifrost Budget
 ===============
 
-Bifrost Budget is a read-only MCP server that retrieves the caller's quota snapshot from Bifrost and returns normalized budget data with derived remaining values.
+Bifrost Budget is a read-only MCP server that retrieves the authenticated user's usage from Bifrost governance and returns normalized budget data with derived remaining values.
 
 This repository includes:
 
@@ -14,13 +14,12 @@ This repository includes:
 
 The server exposes one primary tool:
 
-- `get_quota` — fetches the caller's Bifrost quota snapshot from `GET /api/governance/virtual-keys/quota`
+- `get_quota` — sends `GET /api/governance/users?limit=20` with the configured admin API key, selects the user named by the incoming PingIdentity token, and extracts `access_profiles[*].budgets[*].current_usage`
 
-Authentication is read-only and self-service:
+Authentication is separated by purpose:
 
-- production callers should send an Authorization header to Bifrost, and this service forwards that authenticated request directly when the caller's own budget snapshot is requested
-- the server derives safe caller identity fields from JWT claims for tracing and routing context, but it no longer depends on a JWT-to-virtual-key exchange map
-- for local development or explicit non-production fallback, pass `virtual_key` to the tool directly, send `x-bf-vk` in the MCP request headers with a virtual key, or set `BIFROST_VIRTUAL_KEY` in the runtime environment
+- production callers send an Authorization header containing a PingIdentity token; only its user name/search identifier is derived locally
+- the governance request always uses `BIFROST_ADMIN_API_KEY`; the incoming user token is never used as the admin credential
 
 The tool never returns the raw virtual key. It only returns derived quota data.
 
@@ -33,13 +32,15 @@ Required:
 Optional:
 
 - `BIFROST_QUOTA_PATH` — defaults to `/api/governance/virtual-keys/quota`
+- `BIFROST_USERS_PATH` — defaults to `/api/governance/users?limit=20`
+- `BIFROST_ADMIN_API_KEY` — required admin credential for governance user lookup; provide through a secret in production
 - `BIFROST_TIMEOUT_SECONDS` — defaults to `15`
 - `BIFROST_LOG_LEVEL` — defaults to `INFO`; controls the structured application logs
 - `BIFROST_TRANSPORT` — `streamable-http` (default) or `stdio`
 - `BIFROST_HOST` — defaults to `0.0.0.0`
 - `BIFROST_PORT` — defaults to `8080`
 - `BIFROST_MCP_PATH` — defaults to `/mcp`
-- `BIFROST_VIRTUAL_KEY` — fallback caller key for local development or explicit non-production use only
+
 
 ## Local development
 
@@ -97,7 +98,7 @@ docker run --rm -p 8080:8080 \
   bifrost-budget:local
 ```
 
-The environment-based key above is a fallback example for local/dev or explicit non-production use. Production deployments should rely on the caller's `Authorization` header path.
+The environment-based key above is a fallback example for local/dev or explicit non-production use. Production deployments require `BIFROST_ADMIN_API_KEY` and the caller's `Authorization` header.
 
 Health check:
 

@@ -113,3 +113,52 @@ class BifrostClient:
             duration_ms=duration_ms,
         )
         return report.model_dump(mode="json")
+
+    async def fetch_user_usage(self, *, admin_api_key: str, user_identifier: str) -> dict[str, Any]:
+        if not admin_api_key.strip():
+            raise ToolError("BIFROST_ADMIN_API_KEY must be configured")
+        response = await self._client.get(
+            self.settings.users_url,
+            headers={"accept": "application/json", "authorization": f"Bearer {admin_api_key}"},
+        )
+        log_event(logging.INFO, "user_lookup_response", status_code=response.status_code)
+        if response.status_code >= 400:
+            raise ToolError(f"Bifrost user lookup failed with HTTP {response.status_code}")
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ToolError("Bifrost user lookup returned invalid JSON") from exc
+        users = payload.get("users") if isinstance(payload, dict) else None
+        users = users if isinstance(users, list) else []
+        matches = [user for user in users if isinstance(user, dict) and _user_matches(user, user_identifier)]
+        log_event(logging.INFO, "user_lookup_match", match_count=len(matches))
+        if not matches:
+            raise ToolError("No Bifrost governance user matched the authenticated PingIdentity user")
+        budgets: list[dict[str, Any]] = []
+        malformed = 0
+        profiles = matches[0].get("access_profiles")
+        for profile in profiles if isinstance(profiles, list) else []:
+            profile_budgets = profile.get("budgets") if isinstance(profile, dict) else None
+            for budget in profile_budgets if isinstance(profile_budgets, list) else []:
+                if not isinstance(budget, dict) or "current_usage" not in budget:
+                    malformed += 1
+                    continue
+                budgets.append({
+                    "name": budget.get("name", "usage"),
+                    "consumed": budget.get("current_usage"),
+                    "limit": budget.get("limit"),
+                    "unit": budget.get("unit"),
+                })
+        log_event(logging.INFO, "usage_extraction", budget_count=len(budgets), malformed_budget_count=malformed)
+        return normalize_quota_payload(
+            {"budgets": budgets}, endpoint=self.settings.users_url, auth_source="admin_api_key",
+            queried_at=datetime.now(timezone.utc),
+        ).model_dump(mode="json")
+
+
+def _user_matches(user: dict[str, Any], identifier: str) -> bool:
+    needle = identifier.casefold().strip()
+    return any(
+        isinstance(user.get(key), str) and user[key].casefold().strip() == needle
+        for key in ("name", "username", "email", "user_name", "id")
+    )
