@@ -14,7 +14,9 @@ This repository includes:
 
 The server exposes one primary tool:
 
-- `get_quota` — sends `GET /api/governance/users?limit=20` with the configured admin API key, selects the user named by the incoming PingIdentity token, and extracts `access_profiles[*].budgets[*].current_usage`
+- `get_quota` — derives a search name from the incoming PingIdentity token, sends `GET /api/governance/users?limit=20` with the configured admin API key, selects the matching governance user, and extracts `access_profiles[*].budgets[*].current_usage`.
+
+For the governance response, the server reads the top-level `users` array and compares the derived name against each user's `name`, `username`, `email`, `user_name`, and `id` fields (case-insensitively after trimming). From the first match, every budget containing `current_usage` becomes a normalized row: `current_usage` maps to `consumed`, while `limit` and `unit` are preserved; the normalized summary derives remaining values such as `limit - consumed`.
 
 Authentication is separated by purpose:
 
@@ -28,12 +30,12 @@ The tool never returns the raw virtual key. It only returns derived quota data.
 Required:
 
 - `BIFROST_API_BASE_URL` — base URL for the Bifrost API, for example `https://bifrost.example.com`
+- `BIFROST_ADMIN_API_KEY` — admin credential required for governance user lookup; provide through a deployment secret in production. This key is separate from the caller's PingIdentity token.
 
 Optional:
 
 - `BIFROST_QUOTA_PATH` — defaults to `/api/governance/virtual-keys/quota`
 - `BIFROST_USERS_PATH` — defaults to `/api/governance/users?limit=20`
-- `BIFROST_ADMIN_API_KEY` — required admin credential for governance user lookup; provide through a secret in production
 - `BIFROST_TIMEOUT_SECONDS` — defaults to `15`
 - `BIFROST_LOG_LEVEL` — defaults to `INFO`; controls the structured application logs
 - `BIFROST_TRANSPORT` — `streamable-http` (default) or `stdio`
@@ -55,11 +57,10 @@ Run the server over HTTP:
 
 ```bash
 export BIFROST_API_BASE_URL=https://bifrost.example.com
-export BIFROST_VIRTUAL_KEY=vk_...
 uv run bifrost-budget
 ```
 
-In production, prefer the caller's `Authorization` header path and do not rely on a static `BIFROST_VIRTUAL_KEY` unless you are intentionally using a fallback.
+For the production usage flow, callers must send an `Authorization` header containing the PingIdentity token and the process must receive `BIFROST_ADMIN_API_KEY` through the runtime secret mechanism. The token is used only to derive the governance-user search identity; it is not used to authenticate the governance API request. Static virtual-key fallbacks are for local/dev or explicit non-production use only.
 
 Run the server over stdio:
 
@@ -77,9 +78,9 @@ The server emits structured JSON logs to standard output for:
 - auth source selection
 - tool invocation
 - upstream quota requests and responses
-- errors
+- errors, including missing/invalid credentials, upstream failures, invalid JSON, and no matching governance user
 
-The logs intentionally omit raw virtual keys and Authorization values; they record only the chosen auth path, a non-reversible token fingerprint for correlation, and safe JWT claim fields such as issuer, subject, and tenant when the token is already a JWT.
+Tokens, Authorization header values, admin API keys, virtual keys, and sensitive token claims are never logged. Diagnostics record only safe event metadata, masked/non-reversible fingerprints, header names, status codes, counts, and timing; identifiers used for correlation are masked or fingerprinted. A no-match response raises `No Bifrost governance user matched the authenticated PingIdentity user` without logging the unmatched identity. Upstream HTTP errors and invalid JSON are returned as tool errors with status/type context, while malformed budget entries are skipped and counted.
 
 ## Container
 
@@ -94,11 +95,10 @@ Run:
 ```bash
 docker run --rm -p 8080:8080 \
   -e BIFROST_API_BASE_URL=https://bifrost.example.com \
-  -e BIFROST_VIRTUAL_KEY=vk_... \
   bifrost-budget:local
 ```
 
-The environment-based key above is a fallback example for local/dev or explicit non-production use. Production deployments require `BIFROST_ADMIN_API_KEY` and the caller's `Authorization` header.
+For a production container, inject `BIFROST_ADMIN_API_KEY` from the platform's secret store rather than putting a key in an image, command line, manifest, or log. The caller's `Authorization` header supplies the PingIdentity identity used for the lookup.
 
 Health check:
 
@@ -123,11 +123,23 @@ helm upgrade --install bifrost-budget charts/bifrost-budget \
   --set env.apiBaseUrl=https://bifrost.oly.workside.win
 ```
 
-If you need an explicit fallback key for local/dev or other non-production use, add a secret and wire it into `env.virtualKey.existingSecret`:
+For production, create a Kubernetes Secret through your approved secret-management process and configure the chart's admin-key reference. The chart wiring is:
+
+```yaml
+env:
+  apiBaseUrl: https://bifrost.example.com
+  adminApiKey:
+    existingSecret: bifrost-budget-admin
+    existingSecretKey: BIFROST_ADMIN_API_KEY
+```
+
+`charts/bifrost-budget/templates/deployment.yaml` projects that key into the pod as `BIFROST_ADMIN_API_KEY` using `secretKeyRef`; the value is never stored in `values.yaml`. Do not commit a Secret manifest containing a key or pass the key in a command-line argument. The legacy virtual-key fallback, if intentionally enabled for non-production use, is wired separately through `env.virtualKey.existingSecret` and `BIFROST_VIRTUAL_KEY`.
+
+If you need that explicit fallback for local/dev or other non-production use, create the Secret through your secret manager and wire it into `env.virtualKey.existingSecret`; do not put its value in this repository:
 
 ```bash
 kubectl create secret generic bifrost-budget-vk \
-  --from-literal=BIFROST_VIRTUAL_KEY=vk_...
+  --from-literal=BIFROST_VIRTUAL_KEY="$BIFROST_VIRTUAL_KEY"
 ```
 
 Then install with `--set env.virtualKey.existingSecret=bifrost-budget-vk`.
@@ -170,6 +182,11 @@ spec:
               value: /mcp
             - name: BIFROST_TIMEOUT_SECONDS
               value: "15"
+            - name: BIFROST_ADMIN_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifrost-budget-admin
+                  key: BIFROST_ADMIN_API_KEY
 ```
 
 Service:
@@ -194,16 +211,19 @@ These examples mirror the chart's container port, service port, and `/healthz`-b
 
 ## Usage from an MCP client
 
-Clients can call `get_quota` and provide the upstream credential in one of four ways:
+Clients can call `get_quota`; the production path requires the caller to provide an `Authorization` header containing a PingIdentity token. The server derives only the user search identity/name from that token, then authenticates `GET /api/governance/users?limit=20` with `BIFROST_ADMIN_API_KEY`.
 
-1. production path: caller's Authorization header
-2. fallback request header: `x-bf-vk`
-3. fallback tool argument: `virtual_key`
-4. fallback environment variable: `BIFROST_VIRTUAL_KEY`
+Legacy/non-production fallback credentials can be supplied in one of three ways:
+
+1. fallback request header: `x-bf-vk`
+2. fallback tool argument: `virtual_key`
+3. fallback environment variable: `BIFROST_VIRTUAL_KEY`
 
 The fallback paths are intended for local/dev or explicit non-production use.
 
 The response includes normalized budget rows and a summary with derived totals and remaining values.
+
+If no governance user matches the PingIdentity-derived identity, the tool returns a clear no-match error and no usage report. HTTP errors from the governance users endpoint and invalid JSON likewise fail the tool; budgets without `current_usage` are omitted from the report and reflected in diagnostic counts.
 
 If your upstream Bifrost deployment uses a separate enterprise token-exchange layer, configure that outside this server and pass the resulting caller Authorization header through unchanged; this service intentionally no longer remaps callers to virtual keys.
 
