@@ -3,7 +3,7 @@ replicaCount: 2
 image:
   repository: ghcr.io/jasonrve/bifrost-budget
   # Pin releases by default; override explicitly for a CI SHA or another release.
-  tag: "0.2.1"
+  tag: "0.2.2"
   pullPolicy: IfNotPresent
 
 service:

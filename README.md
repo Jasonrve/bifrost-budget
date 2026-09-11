@@ -122,7 +122,7 @@ Install:
 helm upgrade --install bifrost-budget charts/bifrost-budget \
   --namespace bifrost-budget \
   --create-namespace \
-  --set image.tag=0.2.1 \
+  --set image.tag=0.2.2 \
   --set ingress.enabled=true \
   --set ingress.className=traefik \
   --set ingress.hosts[0].host=bifrost-budget.example.internal \
@@ -154,7 +154,7 @@ The chart configures readiness and liveness probes against `/healthz` and expose
 
 ## Kubernetes examples
 
-The Helm chart is the primary production path, but these plain Kubernetes manifests show the same container wiring in a copy-paste friendly form. They use the GHCR image published by CI (`ghcr.io/jasonrve/bifrost-budget:0.2.1`) and keep auth header-first, so no static Bifrost token is required for production use.
+The Helm chart is the primary production path, but these plain Kubernetes manifests show the same container wiring in a copy-paste friendly form. They use the GHCR image published by CI (`ghcr.io/jasonrve/bifrost-budget:0.2.2`) and keep auth header-first, so no static Bifrost token is required for production use.
 
 Deployment:
 
@@ -175,7 +175,7 @@ spec:
     spec:
       containers:
         - name: bifrost-budget
-          image: ghcr.io/jasonrve/bifrost-budget:0.2.1
+          image: ghcr.io/jasonrve/bifrost-budget:0.2.2
           ports:
             - name: http
               containerPort: 8080

@@ -275,6 +275,53 @@ async def test_resolve_credential_uses_authorization_header_directly(caplog: pyt
 
 
 @pytest.mark.asyncio
+async def test_resolve_credential_prefers_name_claim_from_supplied_pingidentity_jwt(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    configure_logging("INFO")
+    caplog.set_level(logging.INFO, logger="bifrost_budget")
+    name = "Ping User"
+    token = _make_jwt({
+        "name": name,
+        "preferred_username": "ping-user",
+        "email": "ping-user@example.com",
+        "sub": "subject-123456789012345678901234567890",
+        "iss": "https://issuer.example.com",
+        "client_id": "client-123",
+    })
+
+    class DummyContext:
+        headers = {"authorization": f"Bearer {token}"}
+
+    settings = BifrostSettings(api_base_url="https://bifrost.example.com")
+    resolved, source, mode, trace = _resolve_credential(None, DummyContext(), settings)
+
+    assert resolved == f"Bearer {token}"
+    assert source == "request_header:authorization"
+    assert mode == "authorization"
+    assert trace["claim_keys"] == ["client_id", "email", "iss", "name", "preferred_username", "sub"]
+    assert trace["identity_fingerprint"] == fingerprint_value(name)
+    assert trace["identity"] == name
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"users": [{
+            "name": name,
+            "access_profiles": [{"budgets": [{"name": "daily", "limit": 10, "current_usage": 2}]}],
+        }]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://bifrost.example.com") as client:
+        report = await BifrostClient(settings, client=client).fetch_user_usage(
+            admin_api_key="admin-secret",
+            user_identifier=trace["identity"],
+        )
+    assert report["budgets"][0]["consumed"] == 2
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert name not in log_text
+    assert "ping-user@example.com" not in log_text
+    assert token not in log_text
+
+
+@pytest.mark.asyncio
 async def test_resolve_credential_falls_back_to_virtual_key_header() -> None:
     class DummyContext:
         headers = {"x-bf-vk": "header-secret"}

@@ -28,6 +28,7 @@ SAFE_JWT_CLAIM_KEYS = (
     "user_id",
     "name",
 )
+IDENTITY_CLAIM_PRIORITY = ("name", "preferred_username", "email", "upn", "sub", "uid", "user_id")
 
 
 def configure_logging(level: str | None = None) -> logging.Logger:
@@ -125,7 +126,7 @@ def build_credential_trace(
 def extract_identity_name(claims: dict[str, Any] | None) -> str | None:
     if not claims:
         return None
-    for key in ("name", "preferred_username", "email", "upn", "sub", "uid", "user_id"):
+    for key in IDENTITY_CLAIM_PRIORITY:
         value = claims.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
