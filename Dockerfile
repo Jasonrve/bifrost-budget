@@ -15,12 +15,19 @@ RUN uv pip install --system --no-cache-dir .
 
 FROM python:3.11-slim AS runtime
 
+ARG VERSION=0.2.3
+ARG BUILD_SHA=unknown
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     BIFROST_HOST=0.0.0.0 \
     BIFROST_PORT=8080 \
     BIFROST_MCP_PATH=/mcp \
-    BIFROST_TRANSPORT=streamable-http
+    BIFROST_TRANSPORT=streamable-http \
+    BIFROST_BUILD_SHA=${BUILD_SHA}
+
+LABEL org.opencontainers.image.version=${VERSION} \
+      org.opencontainers.image.revision=${BUILD_SHA}
 
 WORKDIR /app
 

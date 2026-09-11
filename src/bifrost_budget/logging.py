@@ -6,6 +6,8 @@ import hashlib
 import json
 import logging
 import os
+import re
+from importlib.metadata import PackageNotFoundError, version as package_version
 from typing import Any, Literal
 
 LOGGER_NAME = "bifrost_budget"
@@ -29,6 +31,7 @@ SAFE_JWT_CLAIM_KEYS = (
     "name",
 )
 IDENTITY_CLAIM_PRIORITY = ("name", "preferred_username", "email", "upn", "sub", "uid", "user_id")
+_BUILD_ID_PATTERN = re.compile(r"^[0-9a-fA-F]{7,64}$")
 
 
 def configure_logging(level: str | None = None) -> logging.Logger:
@@ -42,6 +45,22 @@ def configure_logging(level: str | None = None) -> logging.Logger:
 
 def get_logger() -> logging.Logger:
     return logging.getLogger(LOGGER_NAME)
+
+
+def service_version_info() -> dict[str, str]:
+    """Return safe package/build identifiers for the one-per-process startup log."""
+    try:
+        version = package_version("bifrost-budget")
+    except PackageNotFoundError:
+        version = "unknown"
+
+    build_id = "unknown"
+    for variable in ("BIFROST_BUILD_SHA", "GIT_SHA", "SOURCE_COMMIT"):
+        candidate = os.getenv(variable, "").strip()
+        if _BUILD_ID_PATTERN.fullmatch(candidate):
+            build_id = candidate
+            break
+    return {"version": version, "build_id": build_id}
 
 
 def fingerprint_value(value: str | None, *, length: int = 12) -> str | None:

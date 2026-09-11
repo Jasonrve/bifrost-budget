@@ -74,6 +74,8 @@ uv run bifrost-budget
 
 The server emits structured JSON logs to standard output. Logs cover startup, auth-source selection, tool invocation, the governance-user request and response, matching, usage extraction, and errors. Use the event name (`event`) to group a single troubleshooting attempt; the URL, HTTP status, counts, and duration are operational context, not credentials.
 
+Every process emits one `service_version` event during startup with `version` (the installed `bifrost-budget` package version) and `build_id` (a validated Git SHA when `BIFROST_BUILD_SHA`, `GIT_SHA`, or `SOURCE_COMMIT` is provided, otherwise `unknown`). Use this event to correlate runtime logs with an image tag: for a release, `version` should match the image and Helm tag (currently `0.2.3`), while `build_id` can be matched to the immutable commit-tagged image and deployment revision. Both fields are explicitly `unknown` when unavailable; no configuration values are included.
+
 **Security warning:** diagnostics are masked or fingerprinted only. They must never be treated as a substitute for access controls. Logs must never contain raw tokens, decoded claim values, identities (including names, subjects, or email addresses), API keys, virtual keys, or `Authorization` header values. Do not add raw values to debug statements, exception text, support tickets, or reversible examples. Fingerprints are truncated SHA-256 correlation values and should still be handled as sensitive operational data.
 
 ### Distinguish the two credentials

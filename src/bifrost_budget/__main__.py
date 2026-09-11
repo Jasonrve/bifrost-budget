@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from .logging import configure_logging, log_event
+from .logging import configure_logging, log_event, service_version_info
 from .server import server
 from .settings import BifrostSettings
 
@@ -11,6 +11,7 @@ from .settings import BifrostSettings
 def main() -> None:
     settings = BifrostSettings.from_env()
     configure_logging()
+    log_event(logging.INFO, "service_version", **service_version_info())
     log_event(
         logging.INFO,
         "app_start",

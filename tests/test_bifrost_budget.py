@@ -4,13 +4,16 @@ from datetime import datetime, timezone
 import base64
 import json
 import logging
+from importlib.metadata import PackageNotFoundError, version as package_version
 
 import httpx
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
 from bifrost_budget.client import BifrostClient
-from bifrost_budget.logging import build_credential_trace, configure_logging, fingerprint_value
+from bifrost_budget.logging import build_credential_trace, configure_logging, fingerprint_value, service_version_info
+from bifrost_budget import __version__
+from bifrost_budget.__main__ import main
 from bifrost_budget.normalization import normalize_quota_payload
 from bifrost_budget.server import _resolve_credential, create_server
 from bifrost_budget.settings import BifrostSettings
@@ -20,6 +23,40 @@ def _make_jwt(payload: dict[str, object]) -> str:
     header = base64.urlsafe_b64encode(json.dumps({"alg": "none", "typ": "JWT"}).encode("utf-8")).rstrip(b"=")
     body = base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).rstrip(b"=")
     return f"{header.decode('utf-8')}.{body.decode('utf-8')}.signature"
+
+
+def test_main_emits_service_version_without_sensitive_configuration(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("BIFROST_API_BASE_URL", "https://bifrost.example.com")
+    monkeypatch.setenv("BIFROST_ADMIN_API_KEY", "admin-secret")
+    monkeypatch.setenv("BIFROST_BUILD_SHA", "abc123deadbeef")
+    monkeypatch.setattr("bifrost_budget.__main__.asyncio.run", lambda coroutine: coroutine.close())
+    caplog.set_level(logging.INFO, logger="bifrost_budget")
+
+    main()
+
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert '"event":"service_version"' in log_text
+    assert f'"version":"{package_version("bifrost-budget")}"' in log_text
+    assert '"build_id":"abc123deadbeef"' in log_text
+    assert "admin-secret" not in log_text
+    assert "Authorization" not in log_text
+    assert __version__ == "0.2.3"
+
+
+def test_service_version_uses_unknown_for_missing_metadata_and_invalid_build_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for variable in ("BIFROST_BUILD_SHA", "GIT_SHA", "SOURCE_COMMIT"):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("BIFROST_BUILD_SHA", "not-a-sha-or-secret")
+    monkeypatch.setattr(
+        "bifrost_budget.logging.package_version",
+        lambda _: (_ for _ in ()).throw(PackageNotFoundError("bifrost-budget")),
+    )
+
+    assert service_version_info() == {"version": "unknown", "build_id": "unknown"}
 
 
 @pytest.mark.asyncio
