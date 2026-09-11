@@ -30,8 +30,9 @@ SAFE_JWT_CLAIM_KEYS = (
     "uid",
     "user_id",
     "name",
+    "displayname",
 )
-IDENTITY_CLAIM_PRIORITY = ("name", "preferred_username", "email", "upn", "sub", "uid", "user_id")
+IDENTITY_CLAIM_PRIORITY = ("displayname", "name", "preferred_username", "email", "upn", "sub", "uid", "user_id")
 _BUILD_ID_PATTERN = re.compile(r"^[0-9a-fA-F]{7,64}$")
 _DIAGNOSTIC_KEY = "bifrost-budget-safe-diagnostics-v1"
 _SENSITIVE_HEADER_WORDS = ("authorization", "cookie", "credential", "password", "secret", "token", "api-key", "apikey", "proxy-auth")
@@ -190,6 +191,54 @@ def _decode_jwt_claims(token: str) -> dict[str, Any] | None:
         if isinstance(value, (str, int, float, bool)) and value not in ("", None):
             safe_claims[key] = value
     return safe_claims or None
+
+
+def extract_displayname_from_authorization(authorization: str | None) -> dict[str, Any]:
+    """Resolve the governance identity from the trusted inbound JWT only.
+
+    The returned metadata is safe to log; the identity is retained only for the
+    immediate governance lookup and is never included in diagnostics.
+    """
+    result: dict[str, Any] = {
+        "identity": None,
+        "claim": "displayname",
+        "reason": "displayname_missing",
+        "present": False,
+        "value_type": None,
+        "length": None,
+        "fingerprint": None,
+    }
+    if not authorization:
+        return result
+    _, token = _split_authorization(authorization)
+    claims = _decode_jwt_payload(token)
+    if claims is None or "displayname" not in claims:
+        return result
+    value = claims["displayname"]
+    result["present"] = True
+    result["value_type"] = type(value).__name__
+    if isinstance(value, str):
+        result["length"] = len(value.strip())
+        result["fingerprint"] = fingerprint_value(value)
+        if value.strip():
+            result.update(identity=value.strip(), reason="displayname_selected")
+            return result
+    elif isinstance(value, (list, dict)):
+        result["length"] = len(value)
+    result["reason"] = "displayname_invalid"
+    return result
+
+
+def _decode_jwt_payload(token: str) -> dict[str, Any] | None:
+    parts = token.split(".")
+    if len(parts) < 2:
+        return None
+    padding = "=" * (-len(parts[1]) % 4)
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(parts[1] + padding).decode("utf-8"))
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return claims if isinstance(claims, dict) else None
 
 
 def build_credential_trace(
