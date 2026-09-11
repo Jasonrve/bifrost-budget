@@ -78,6 +78,9 @@ async def test_build_credential_trace_redacts_authorization_token_and_extracts_s
     assert trace["scheme"] == "Bearer"
     assert trace["token_fingerprint"] == fingerprint_value(token)
     assert trace["claim_keys"] == ["iss", "sub", "tenant"]
+    assert trace["claim_fingerprints"]["sub"] == fingerprint_value("user-123")
+    assert trace["claim_lengths"]["sub"] == len("user-123")
+    assert trace["token_length"] == len(token)
     assert trace["identity_fingerprint"] == fingerprint_value("user-123")
     assert token not in json.dumps(trace)
     assert "signature" not in json.dumps(trace)
@@ -376,6 +379,36 @@ async def test_user_usage_raises_tool_error_when_pingidentity_user_has_no_match(
     assert seen["authorization"] == "Bearer admin-secret"
     log_text = "\n".join(record.getMessage() for record in caplog.records)
     assert '"event":"user_lookup_match"' in log_text
+    assert '"event":"governance_user_request"' in log_text
+    assert '"event":"governance_user_response"' in log_text
+    assert '"returned_user_count":1' in log_text
     assert '"match_count":0' in log_text
+    assert '"match_reason":"no_supported_identity_field_match"' in log_text
+    assert '"identity_fields":["name"]' in log_text
+    assert '"search_identity_length":29' in log_text
+    assert fingerprint_value("different-user@example.com") in log_text
     assert "admin-secret" not in log_text
     assert "pingidentity-user@example.com" not in log_text
+
+
+@pytest.mark.asyncio
+async def test_user_usage_logs_masked_candidate_match_metadata(caplog: pytest.LogCaptureFixture) -> None:
+    configure_logging("INFO")
+    caplog.set_level(logging.INFO, logger="bifrost_budget")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"users": [{"email": "alice@example.com"}]})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://bifrost.example.com")
+    try:
+        bifrost = BifrostClient(BifrostSettings(api_base_url="https://bifrost.example.com"), client=client)
+        await bifrost.fetch_user_usage(admin_api_key="admin-secret", user_identifier="alice@example.com")
+    finally:
+        await client.aclose()
+
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert '"match_reason":"matched"' in log_text
+    assert '"matched_fields":["email"]' in log_text
+    assert fingerprint_value("alice@example.com") in log_text
+    assert "alice@example.com" not in log_text
+    assert "admin-secret" not in log_text

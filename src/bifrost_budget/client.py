@@ -8,7 +8,7 @@ from typing import Any, Literal
 import httpx
 from mcp.server.mcpserver.exceptions import ToolError
 
-from .logging import build_credential_trace, log_event, safe_text_preview
+from .logging import build_credential_trace, fingerprint_value, log_event, safe_text_preview
 from .normalization import normalize_quota_payload
 from .settings import BifrostSettings
 
@@ -117,11 +117,31 @@ class BifrostClient:
     async def fetch_user_usage(self, *, admin_api_key: str, user_identifier: str) -> dict[str, Any]:
         if not admin_api_key.strip():
             raise ToolError("BIFROST_ADMIN_API_KEY must be configured")
+        user_lookup_url = self.settings.users_url
+        search_trace = {
+            "search_identity_fingerprint": fingerprint_value(user_identifier),
+            "search_identity_length": len(user_identifier.strip()),
+        }
+        log_event(
+            logging.INFO,
+            "governance_user_request",
+            request_url=user_lookup_url,
+            outbound_auth_mode="admin_api_key",
+            inbound_credential="pingidentity_authorization",
+            **search_trace,
+        )
         response = await self._client.get(
-            self.settings.users_url,
+            user_lookup_url,
             headers={"accept": "application/json", "authorization": f"Bearer {admin_api_key}"},
         )
-        log_event(logging.INFO, "user_lookup_response", status_code=response.status_code)
+        log_event(
+            logging.INFO,
+            "governance_user_response",
+            request_url=user_lookup_url,
+            status_code=response.status_code,
+            outbound_auth_mode="admin_api_key",
+            **search_trace,
+        )
         if response.status_code >= 400:
             raise ToolError(f"Bifrost user lookup failed with HTTP {response.status_code}")
         try:
@@ -130,8 +150,37 @@ class BifrostClient:
             raise ToolError("Bifrost user lookup returned invalid JSON") from exc
         users = payload.get("users") if isinstance(payload, dict) else None
         users = users if isinstance(users, list) else []
-        matches = [user for user in users if isinstance(user, dict) and _user_matches(user, user_identifier)]
-        log_event(logging.INFO, "user_lookup_match", match_count=len(matches))
+        candidate_diagnostics: list[dict[str, Any]] = []
+        matches: list[dict[str, Any]] = []
+        for index, user in enumerate(users):
+            if not isinstance(user, dict):
+                continue
+            matched_fields = _matching_fields(user, user_identifier)
+            fields = {
+                key: fingerprint_value(user[key])
+                for key in _IDENTITY_FIELDS
+                if isinstance(user.get(key), str) and user[key].strip()
+            }
+            candidate_diagnostics.append({
+                "candidate_index": index,
+                "identity_fields": sorted(fields),
+                "identity_fingerprints": fields,
+                "match": bool(matched_fields),
+                "match_reason": "matched" if matched_fields else "no_supported_identity_field_match",
+                "matched_fields": matched_fields,
+            })
+            if matched_fields:
+                matches.append(user)
+        log_event(
+            logging.INFO,
+            "user_lookup_match",
+            request_url=user_lookup_url,
+            status_code=response.status_code,
+            returned_user_count=len(users),
+            match_count=len(matches),
+            candidates=candidate_diagnostics,
+            **search_trace,
+        )
         if not matches:
             raise ToolError("No Bifrost governance user matched the authenticated PingIdentity user")
         budgets: list[dict[str, Any]] = []
@@ -151,14 +200,22 @@ class BifrostClient:
                 })
         log_event(logging.INFO, "usage_extraction", budget_count=len(budgets), malformed_budget_count=malformed)
         return normalize_quota_payload(
-            {"budgets": budgets}, endpoint=self.settings.users_url, auth_source="admin_api_key",
+            {"budgets": budgets}, endpoint=user_lookup_url, auth_source="admin_api_key",
             queried_at=datetime.now(timezone.utc),
         ).model_dump(mode="json")
 
 
-def _user_matches(user: dict[str, Any], identifier: str) -> bool:
+_IDENTITY_FIELDS = ("name", "username", "email", "user_name", "id")
+
+
+def _matching_fields(user: dict[str, Any], identifier: str) -> list[str]:
     needle = identifier.casefold().strip()
-    return any(
-        isinstance(user.get(key), str) and user[key].casefold().strip() == needle
-        for key in ("name", "username", "email", "user_name", "id")
-    )
+    return [
+        key
+        for key in _IDENTITY_FIELDS
+        if isinstance(user.get(key), str) and user[key].casefold().strip() == needle
+    ]
+
+
+def _user_matches(user: dict[str, Any], identifier: str) -> bool:
+    return bool(_matching_fields(user, identifier))

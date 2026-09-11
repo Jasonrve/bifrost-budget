@@ -98,15 +98,23 @@ def build_credential_trace(
         "credential_mode": credential_mode,
         "token_present": bool(normalized),
         "token_fingerprint": fingerprint_value(normalized),
+        "token_length": len(normalized) if normalized else 0,
     }
 
     if credential_mode == "authorization" and normalized:
         scheme, token = _split_authorization(normalized)
         trace["scheme"] = scheme
         trace["token_fingerprint"] = fingerprint_value(token)
+        trace["token_length"] = len(token)
         claims = _decode_jwt_claims(token)
         if claims:
             trace["claim_keys"] = sorted(claims)
+            trace["claim_fingerprints"] = {
+                key: fingerprint_value(str(value)) for key, value in sorted(claims.items())
+            }
+            trace["claim_lengths"] = {
+                key: len(str(value)) for key, value in sorted(claims.items())
+            }
             identity = extract_identity_name(claims)
             if identity:
                 trace["identity_fingerprint"] = fingerprint_value(identity)

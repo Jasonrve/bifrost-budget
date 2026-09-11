@@ -66,6 +66,10 @@ def create_server() -> MCPServer[object]:
             outbound_auth_mode=credential_mode,
             transport=settings.transport,
             quota_url=settings.quota_url,
+            inbound_credential="pingidentity_authorization" if credential_mode == "authorization" else "fallback_virtual_key",
+            outbound_credential="bifrost_admin_api_key",
+            search_identity_fingerprint=caller_identity.get("identity_fingerprint"),
+            search_identity_length=len(caller_identity["identity"]),
         )
         try:
             async with BifrostClient(settings) as client:

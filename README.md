@@ -82,6 +82,12 @@ The server emits structured JSON logs to standard output for:
 
 Tokens, Authorization header values, admin API keys, virtual keys, and sensitive token claims are never logged. Diagnostics record only safe event metadata, masked/non-reversible fingerprints, header names, status codes, counts, and timing; identifiers used for correlation are masked or fingerprinted. A no-match response raises `No Bifrost governance user matched the authenticated PingIdentity user` without logging the unmatched identity. Upstream HTTP errors and invalid JSON are returned as tool errors with status/type context, while malformed budget entries are skipped and counted.
 
+### Troubleshooting PingIdentity user matching
+
+User lookup diagnostics include the governance request URL and status, returned user count, the derived search identity's non-reversible fingerprint and length, and per-candidate identity field names, fingerprints, match reason, and matched fields. These fields show whether a PingIdentity `sub` (or another supported claim) maps to a governance `name`, `username`, `email`, `user_name`, or `id` without exposing the values. Logs explicitly distinguish the inbound PingIdentity credential from the outbound `BIFROST_ADMIN_API_KEY` request.
+
+Warning: diagnostics are masked only. They must never be treated as a substitute for access controls, and logs must not contain raw tokens, decoded claim values, email/name/subject values, API keys, or Authorization headers. Fingerprints are intended for correlation and should still be handled as sensitive operational data.
+
 ## Container
 
 Build:
