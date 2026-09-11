@@ -74,7 +74,7 @@ uv run bifrost-budget
 
 The server emits structured JSON logs to standard output. Logs cover startup, auth-source selection, tool invocation, the governance-user request and response, matching, usage extraction, and errors. Use the event name (`event`) to group a single troubleshooting attempt; the URL, HTTP status, counts, and duration are operational context, not credentials.
 
-Every process emits one `service_version` event during startup with `version` (the installed `bifrost-budget` package version) and `build_id` (a validated Git SHA when `BIFROST_BUILD_SHA`, `GIT_SHA`, or `SOURCE_COMMIT` is provided, otherwise `unknown`). Use this event to correlate runtime logs with an image tag: for a release, `version` should match the image and Helm tag (currently `0.2.5`), while `build_id` can be matched to the immutable commit-tagged image and deployment revision. Both fields are explicitly `unknown` when unavailable; no configuration values are included.
+Every process emits one `service_version` event during startup with `version` (the installed `bifrost-budget` package version) and `build_id` (a validated Git SHA when `BIFROST_BUILD_SHA`, `GIT_SHA`, or `SOURCE_COMMIT` is provided, otherwise `unknown`). Use this event to correlate runtime logs with an image tag: for a release, `version` should match the image and Helm tag (currently `0.2.6`), while `build_id` can be matched to the immutable commit-tagged image and deployment revision. Both fields are explicitly `unknown` when unavailable; no configuration values are included.
 
 **Security warning:** diagnostics are masked or fingerprinted only. They must never be treated as a substitute for access controls. Logs must never contain raw tokens, decoded claim values, identities (including names, subjects, or email addresses), API keys, virtual keys, or `Authorization` header values. Do not add raw values to debug statements, exception text, support tickets, or reversible examples. Fingerprints are truncated SHA-256 correlation values and should still be handled as sensitive operational data.
 
@@ -85,7 +85,9 @@ The production flow has two deliberately separate authentication paths:
 1. **Inbound PingIdentity credential:** the caller supplies `Authorization: Bearer <token>`. The service inspects the token locally to identify the caller. Its safe diagnostic trace can include `auth_source`, `credential_mode`, `token_present`, `scheme`, `token_length`, `token_fingerprint`, `claim_keys`, per-claim `claim_fingerprints`, per-claim `claim_lengths`, and the selected `identity_fingerprint`. Claim values themselves are never logged.
 2. **Outbound governance request:** the service calls `GET /api/governance/users?limit=20` with `BIFROST_ADMIN_API_KEY` as its outbound Bearer credential. The request diagnostic labels this as `outbound_auth_mode: "admin_api_key"` and `inbound_credential: "pingidentity_authorization"`; it records neither the admin key nor an Authorization header value. The inbound PingIdentity token is never reused as the admin credential.
 
-The selected identity claim follows this priority: `name`, `preferred_username`, `email`, `upn`, `sub`, `uid`, then `user_id`. The diagnostic `claim_keys` list tells you which safe claims were present; compare claim fingerprints and lengths with the derived search identity fingerprint and length to confirm which claim was selected without revealing its value. A malformed or non-JWT credential may have no claim diagnostics and cannot provide a usable identity.
+The selected identity claim follows this priority: `name`, `preferred_username`, `email`, `upn`, `sub`, `uid`, then `user_id`. The diagnostic `claim_keys` list tells you which safe claims were present; `selected_identity_claim`, `identity_extraction_source`, and `identity_selection_reason` state exactly what was selected without revealing its value. The only accepted extraction source is `raw_authorization_jwt`; reduced claims supplied by an authentication middleware are never used as a silent fallback. If `name` is present in the caller's JWT, `selected_identity_claim` must be `name` and the search fingerprint/length must match that claim.
+
+If the logs show only `client_id`, `iss`, and `sub`, or show `identity_extraction_source` as anything other than `raw_authorization_jwt`, the complete inbound Authorization JWT did not reach the MCP application. The upstream proxy/auth middleware must preserve the original `Authorization: Bearer <JWT>` header on the Streamable HTTP request (or explicitly pass the complete claims through a supported, trusted application contract); it is not sufficient to pass reduced middleware metadata. The service fails rather than searching by a reduced metadata subject.
 
 ### Interpret governance-user diagnostics
 
@@ -140,7 +142,7 @@ Install:
 helm upgrade --install bifrost-budget charts/bifrost-budget \
   --namespace bifrost-budget \
   --create-namespace \
-  --set image.tag=0.2.5 \
+  --set image.tag=0.2.6 \
   --set ingress.enabled=true \
   --set ingress.className=traefik \
   --set ingress.hosts[0].host=bifrost-budget.example.internal \

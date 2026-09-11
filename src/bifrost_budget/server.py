@@ -9,7 +9,13 @@ from mcp.server.mcpserver.context import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
 from .client import BifrostClient
-from .logging import build_credential_trace, extract_identity_from_authorization, log_event
+from .logging import (
+    _decode_jwt_claims,
+    build_credential_trace,
+    extract_identity_from_authorization,
+    log_event,
+    select_identity_claim,
+)
 from .settings import BifrostSettings
 
 SERVER_NAME = "bifrost-budget"
@@ -27,7 +33,7 @@ def create_server() -> MCPServer[object]:
         title=SERVER_TITLE,
         description=SERVER_DESCRIPTION,
         instructions=SERVER_INSTRUCTIONS,
-        version="0.2.5",
+        version="0.2.6",
     )
 
     @server.custom_route("/healthz", ["GET"], include_in_schema=False)
@@ -70,6 +76,9 @@ def create_server() -> MCPServer[object]:
             outbound_credential="bifrost_admin_api_key",
             search_identity_fingerprint=caller_identity.get("identity_fingerprint"),
             search_identity_length=len(caller_identity["identity"]),
+            selected_identity_claim=caller_identity.get("selected_identity_claim"),
+            identity_extraction_source=caller_identity.get("identity_extraction_source"),
+            identity_selection_reason=caller_identity.get("identity_selection_reason"),
         )
         try:
             async with BifrostClient(settings) as client:
@@ -141,10 +150,23 @@ def _resolve_credential(
             )
             identity = extract_identity_from_authorization(authorization)
             if not identity:
-                raise ToolError("Authorization token did not contain a PingIdentity user name")
+                raise ToolError(
+                    "Authorization token did not contain a supported PingIdentity identity claim "
+                    "(name, preferred_username, email, upn, sub, uid, or user_id)"
+                )
+            _, token = authorization.strip().split(None, 1)
+            claims = _decode_jwt_claims(token)
+            selection = select_identity_claim(claims)
             authorization_trace["identity_fingerprint"] = build_credential_trace(
                 identity, auth_source="identity", credential_mode="virtual_key"
             )["token_fingerprint"]
+            authorization_trace.update(
+                {
+                    "selected_identity_claim": selection["claim"],
+                    "identity_extraction_source": "raw_authorization_jwt",
+                    "identity_selection_reason": selection["reason"],
+                }
+            )
             return authorization, "request_header:authorization", "authorization", {
                 **authorization_trace,
                 "identity": identity,

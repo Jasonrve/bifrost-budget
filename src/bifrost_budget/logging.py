@@ -135,21 +135,37 @@ def build_credential_trace(
             trace["claim_lengths"] = {
                 key: len(str(value)) for key, value in sorted(claims.items())
             }
-            identity = extract_identity_name(claims)
-            if identity:
-                trace["identity_fingerprint"] = fingerprint_value(identity)
+            selection = select_identity_claim(claims)
+            trace.update(
+                {
+                    "selected_identity_claim": selection["claim"],
+                    "identity_extraction_source": "raw_authorization_jwt",
+                    "identity_selection_reason": selection["reason"],
+                }
+            )
+            if selection["identity"]:
+                trace["identity_fingerprint"] = fingerprint_value(selection["identity"])
 
     return trace
 
 
 def extract_identity_name(claims: dict[str, Any] | None) -> str | None:
+    return select_identity_claim(claims)["identity"]
+
+
+def select_identity_claim(claims: dict[str, Any] | None) -> dict[str, str | None]:
+    """Select a caller identity without ever returning it in diagnostics.
+
+    The source is intentionally explicit: only claims decoded from the raw inbound
+    Authorization JWT may be used. Middleware metadata is not an identity fallback.
+    """
     if not claims:
-        return None
+        return {"identity": None, "claim": None, "reason": "no_decodable_authorization_claims"}
     for key in IDENTITY_CLAIM_PRIORITY:
         value = claims.get(key)
         if isinstance(value, str) and value.strip():
-            return value.strip()
-    return None
+            return {"identity": value.strip(), "claim": key, "reason": f"selected_{key}_claim"}
+    return {"identity": None, "claim": None, "reason": "no_supported_identity_claim"}
 
 
 def extract_identity_from_authorization(authorization: str | None) -> str | None:

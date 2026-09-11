@@ -2,12 +2,17 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import base64
+import importlib
 import json
 import logging
 from importlib.metadata import PackageNotFoundError, version as package_version
 
 import httpx
+import httpx2
 import pytest
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.server.mcpserver.exceptions import ToolError
 
 from bifrost_budget.client import BifrostClient
@@ -42,7 +47,7 @@ def test_main_emits_service_version_without_sensitive_configuration(
     assert '"build_id":"abc123deadbeef"' in log_text
     assert "admin-secret" not in log_text
     assert "Authorization" not in log_text
-    assert __version__ == "0.2.5"
+    assert __version__ == "0.2.6"
 
 
 def test_service_version_uses_unknown_for_missing_metadata_and_invalid_build_id(
@@ -288,6 +293,61 @@ async def test_server_exposes_health_route_and_tool_metadata() -> None:
 
 
 @pytest.mark.asyncio
+async def test_streamable_http_tool_path_selects_name_claim(monkeypatch: pytest.MonkeyPatch) -> None:
+    name = "Ping User"
+    token = _make_jwt(
+        {
+            "name": name,
+            "preferred_username": "ping-user",
+            "email": "ping-user@example.com",
+            "sub": "subject-123456789012345678901234567890",
+            "iss": "https://issuer.example.com",
+            "client_id": "client-123",
+        }
+    )
+    seen: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, settings: BifrostSettings) -> None:
+            pass
+
+        async def __aenter__(self) -> "FakeClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def fetch_user_usage(self, *, admin_api_key: str, user_identifier: str) -> dict[str, object]:
+            seen.update(admin_api_key=admin_api_key, user_identifier=user_identifier)
+            return {"budgets": [], "summary": {"budget_count": 0}}
+
+    server_module = importlib.import_module("bifrost_budget.server")
+    monkeypatch.setattr(server_module, "BifrostClient", FakeClient)
+    monkeypatch.setenv("BIFROST_API_BASE_URL", "https://bifrost.example.com")
+    monkeypatch.setenv("BIFROST_ADMIN_API_KEY", "admin-secret")
+    app = create_server().streamable_http_app(
+        streamable_http_path="/mcp",
+        stateless_http=True,
+        json_response=True,
+        transport_security=TransportSecuritySettings(allowed_hosts=["test"]),
+    )
+    async with app.router.lifespan_context(app):
+        async with httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=app),
+            base_url="http://test",
+            headers={"authorization": f"Bearer {token}"},
+        ) as http_client:
+            async with streamable_http_client(
+                "http://test/mcp", http_client=http_client, terminate_on_close=False
+            ) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    result = await session.call_tool("get_quota", {})
+
+    assert result.is_error is False
+    assert seen == {"admin_api_key": "admin-secret", "user_identifier": name}
+
+@pytest.mark.asyncio
 async def test_virtual_key_resolution_prefers_explicit_argument() -> None:
     class DummyContext:
         headers = {"x-bf-vk": "header-secret", "authorization": "Bearer auth-secret"}
@@ -353,6 +413,9 @@ async def test_resolve_credential_prefers_name_claim_from_supplied_pingidentity_
     assert mode == "authorization"
     assert trace["claim_keys"] == ["client_id", "email", "iss", "name", "preferred_username", "sub"]
     assert trace["identity_fingerprint"] == fingerprint_value(name)
+    assert trace["selected_identity_claim"] == "name"
+    assert trace["identity_extraction_source"] == "raw_authorization_jwt"
+    assert trace["identity_selection_reason"] == "selected_name_claim"
     assert trace["identity"] == name
 
     def handler(_: httpx.Request) -> httpx.Response:
