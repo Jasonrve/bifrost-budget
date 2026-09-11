@@ -7,6 +7,7 @@ from typing import Literal, cast
 DEFAULT_API_BASE_URL = ""
 DEFAULT_QUOTA_PATH = "/api/governance/virtual-keys/quota"
 DEFAULT_USERS_PATH = "/api/governance/users?limit=20"
+DEFAULT_USERINFO_URL = "https://sso-dev.sanlamcloud.co.za/as/userinfo"
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_HTTP_PORT = 8080
 DEFAULT_MCP_PATH = "/mcp"
@@ -21,6 +22,7 @@ class BifrostSettings:
     api_base_url: str
     quota_path: str = DEFAULT_QUOTA_PATH
     users_path: str = DEFAULT_USERS_PATH
+    userinfo_url: str = DEFAULT_USERINFO_URL
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     transport: Literal["streamable-http", "stdio"] = DEFAULT_TRANSPORT
     host: str = DEFAULT_HOST
@@ -43,6 +45,7 @@ class BifrostSettings:
         *,
         api_base_url: str | None = None,
         quota_path: str | None = None,
+        userinfo_url: str | None = None,
         timeout_seconds: float | None = None,
         transport: Literal["streamable-http", "stdio"] | None = None,
         host: str | None = None,
@@ -66,6 +69,7 @@ class BifrostSettings:
             api_base_url=resolved_api_base_url,
             quota_path=(quota_path or os.getenv("BIFROST_QUOTA_PATH", DEFAULT_QUOTA_PATH)).strip() or DEFAULT_QUOTA_PATH,
             users_path=os.getenv("BIFROST_USERS_PATH", DEFAULT_USERS_PATH).strip() or DEFAULT_USERS_PATH,
+            userinfo_url=(userinfo_url or os.getenv("BIFROST_USERINFO_URL", DEFAULT_USERINFO_URL)).strip() or DEFAULT_USERINFO_URL,
             timeout_seconds=float(timeout_seconds or os.getenv("BIFROST_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS)),
             transport=transport_value,
             host=(host or os.getenv("BIFROST_HOST", DEFAULT_HOST)).strip() or DEFAULT_HOST,
