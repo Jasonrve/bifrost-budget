@@ -156,17 +156,15 @@ class BifrostClient:
             if not isinstance(user, dict):
                 continue
             matched_fields = _matching_fields(user, user_identifier)
-            fields = {
-                key: fingerprint_value(user[key])
-                for key in _IDENTITY_FIELDS
-                if isinstance(user.get(key), str) and user[key].strip()
-            }
+            fields = _candidate_identity_fingerprints(user)
             candidate_diagnostics.append({
                 "candidate_index": index,
                 "identity_fields": sorted(fields),
                 "identity_fingerprints": fields,
+                "field_metadata": _candidate_field_metadata(user),
                 "match": bool(matched_fields),
                 "match_reason": "matched" if matched_fields else "no_supported_identity_field_match",
+                "match_reason_detail": _candidate_match_reason_detail(user, matched_fields),
                 "matched_fields": matched_fields,
             })
             if matched_fields:
@@ -206,6 +204,41 @@ class BifrostClient:
 
 
 _IDENTITY_FIELDS = ("name", "username", "email", "user_name", "id")
+
+
+def _candidate_identity_fingerprints(user: dict[str, Any]) -> dict[str, str]:
+    return {
+        key: fingerprint_value(user[key]) or ""
+        for key in _IDENTITY_FIELDS
+        if isinstance(user.get(key), str) and user[key].strip()
+    }
+
+
+def _candidate_field_metadata(user: dict[str, Any]) -> list[dict[str, Any]]:
+    metadata: list[dict[str, Any]] = []
+    for key in _IDENTITY_FIELDS:
+        value = user.get(key)
+        field: dict[str, Any] = {
+            "field": key,
+            "present": key in user,
+            "value_type": type(value).__name__ if key in user else None,
+        }
+        if isinstance(value, str) and value.strip():
+            field["fingerprint"] = fingerprint_value(value)
+            field["length"] = len(value.strip())
+        metadata.append(field)
+    return metadata
+
+
+def _candidate_match_reason_detail(user: dict[str, Any], matched_fields: list[str]) -> str:
+    if matched_fields:
+        return "matched"
+    present_fields = [key for key in _IDENTITY_FIELDS if key in user]
+    if not present_fields:
+        return "field_absent"
+    if any(not isinstance(user[key], str) for key in present_fields):
+        return "field_non_string"
+    return "normalized_mismatch"
 
 
 def _matching_fields(user: dict[str, Any], identifier: str) -> list[str]:

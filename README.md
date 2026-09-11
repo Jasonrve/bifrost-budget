@@ -84,7 +84,7 @@ Tokens, Authorization header values, admin API keys, virtual keys, and sensitive
 
 ### Troubleshooting PingIdentity user matching
 
-User lookup diagnostics include the governance request URL and status, returned user count, the derived search identity's non-reversible fingerprint and length, and per-candidate identity field names, fingerprints, match reason, and matched fields. These fields show whether a PingIdentity `sub` (or another supported claim) maps to a governance `name`, `username`, `email`, `user_name`, or `id` without exposing the values. Logs explicitly distinguish the inbound PingIdentity credential from the outbound `BIFROST_ADMIN_API_KEY` request.
+User lookup diagnostics include the governance request URL and status, returned user count, the derived search identity's non-reversible fingerprint and length, and per-candidate identity field names, fingerprints, field metadata, match reason, reason detail, and matched fields. Reason details distinguish a successful match, absent supported fields, non-string fields, and normalized value mismatches without exposing values. These fields show whether a PingIdentity `sub` (or another supported claim) maps to a governance `name`, `username`, `email`, `user_name`, or `id` without exposing the values. Logs explicitly distinguish the inbound PingIdentity credential from the outbound `BIFROST_ADMIN_API_KEY` request.
 
 Warning: diagnostics are masked only. They must never be treated as a substitute for access controls, and logs must not contain raw tokens, decoded claim values, email/name/subject values, API keys, or Authorization headers. Fingerprints are intended for correlation and should still be handled as sensitive operational data.
 

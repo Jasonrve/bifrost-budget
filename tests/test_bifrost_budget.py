@@ -459,3 +459,37 @@ async def test_user_usage_logs_masked_candidate_match_metadata(caplog: pytest.Lo
     assert fingerprint_value("alice@example.com") in log_text
     assert "alice@example.com" not in log_text
     assert "admin-secret" not in log_text
+
+
+@pytest.mark.asyncio
+async def test_user_usage_logs_explicit_candidate_field_reasons_without_values(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    configure_logging("INFO")
+    caplog.set_level(logging.INFO, logger="bifrost_budget")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"users": [
+            {"username": "other-user"},
+            {"email": 12345},
+            {"id": "different-user"},
+            {"name": "Alice X"},
+            {"display_name": "unusable-field"},
+        ]})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://bifrost.example.com")
+    try:
+        bifrost = BifrostClient(BifrostSettings(api_base_url="https://bifrost.example.com"), client=client)
+        with pytest.raises(ToolError):
+            await bifrost.fetch_user_usage(admin_api_key="admin-secret", user_identifier="alice")
+    finally:
+        await client.aclose()
+
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert '"match_reason_detail":"field_non_string"' in log_text
+    assert '"match_reason_detail":"field_absent"' in log_text
+    assert '"match_reason_detail":"normalized_mismatch"' in log_text
+    assert '"field_metadata"' in log_text
+    assert "other-user" not in log_text
+    assert "different-user" not in log_text
+    assert "admin-secret" not in log_text
