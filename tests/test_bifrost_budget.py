@@ -42,7 +42,7 @@ def test_main_emits_service_version_without_sensitive_configuration(
     assert '"build_id":"abc123deadbeef"' in log_text
     assert "admin-secret" not in log_text
     assert "Authorization" not in log_text
-    assert __version__ == "0.2.3"
+    assert __version__ == "0.2.4"
 
 
 def test_service_version_uses_unknown_for_missing_metadata_and_invalid_build_id(
