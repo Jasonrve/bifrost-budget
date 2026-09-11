@@ -37,7 +37,7 @@ def create_server() -> MCPServer[object]:
         title=SERVER_TITLE,
         description=SERVER_DESCRIPTION,
         instructions=SERVER_INSTRUCTIONS,
-        version="0.3.1",
+        version="0.3.2",
     )
 
     @server.custom_route("/healthz", ["GET"], include_in_schema=False)

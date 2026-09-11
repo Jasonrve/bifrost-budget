@@ -56,7 +56,7 @@ def test_main_emits_service_version_without_sensitive_configuration(
     assert '"build_id":"abc123deadbeef"' in log_text
     assert "admin-secret" not in log_text
     assert "Authorization" not in log_text
-    assert __version__ == "0.3.1"
+    assert __version__ == "0.3.2"
 
 
 def test_raw_header_logging_is_explicitly_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
