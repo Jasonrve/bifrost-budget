@@ -101,6 +101,18 @@ def header_diagnostics(headers: Any) -> list[dict[str, Any]]:
     return sorted(result, key=lambda item: item["name"])
 
 
+def raw_header_diagnostics(headers: Any) -> dict[str, str]:
+    """Return inbound headers verbatim for explicitly enabled local diagnostics."""
+    if not headers:
+        return {}
+    return {str(name): value if isinstance(value, str) else str(value) for name, value in headers.items()}
+
+
+def raw_header_logging_enabled() -> bool:
+    """Enable clear-text header logging only for an explicit diagnostic run."""
+    return os.getenv("BIFROST_LOG_RAW_HEADERS", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def authorization_diagnostics(authorization: str | None) -> dict[str, Any]:
     """Return exhaustive, value-free metadata for an Authorization header."""
     normalized = authorization.strip() if isinstance(authorization, str) else ""

@@ -22,6 +22,8 @@ from bifrost_budget.logging import (
     configure_logging,
     fingerprint_value,
     header_diagnostics,
+    raw_header_diagnostics,
+    raw_header_logging_enabled,
     service_version_info,
 )
 from bifrost_budget import __version__
@@ -54,7 +56,18 @@ def test_main_emits_service_version_without_sensitive_configuration(
     assert '"build_id":"abc123deadbeef"' in log_text
     assert "admin-secret" not in log_text
     assert "Authorization" not in log_text
-    assert __version__ == "0.2.7"
+    assert __version__ == "0.3.0"
+
+
+def test_raw_header_logging_is_explicitly_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    headers = {"Authorization": "Bearer test-token", "X-Debug": "clear-text-value"}
+
+    monkeypatch.delenv("BIFROST_LOG_RAW_HEADERS", raising=False)
+    assert raw_header_logging_enabled() is False
+    assert raw_header_diagnostics(headers) == {"Authorization": "Bearer test-token", "X-Debug": "clear-text-value"}
+
+    monkeypatch.setenv("BIFROST_LOG_RAW_HEADERS", "true")
+    assert raw_header_logging_enabled() is True
 
 
 def test_service_version_uses_unknown_for_missing_metadata_and_invalid_build_id(

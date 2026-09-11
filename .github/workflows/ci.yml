@@ -49,9 +49,9 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: ${{ github.ref == 'refs/heads/main' }}
           build-args: |
-            VERSION=0.2.6
+            VERSION=0.3.0
             BUILD_SHA=${{ github.sha }}
           tags: |
             ghcr.io/jasonrve/bifrost-budget:${{ github.sha }}
             ghcr.io/jasonrve/bifrost-budget:latest
-            ghcr.io/jasonrve/bifrost-budget:0.2.6
+            ghcr.io/jasonrve/bifrost-budget:0.3.0

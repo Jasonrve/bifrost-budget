@@ -74,15 +74,17 @@ uv run bifrost-budget
 
 The server emits structured JSON logs to standard output. Logs cover startup, auth-source selection, tool invocation, the governance-user request and response, matching, usage extraction, and errors. Use the event name (`event`) to group a single troubleshooting attempt; the URL, HTTP status, counts, and duration are operational context, not credentials.
 
-Every process emits one `service_version` event during startup with `version` (the installed `bifrost-budget` package version) and `build_id` (a validated Git SHA when `BIFROST_BUILD_SHA`, `GIT_SHA`, or `SOURCE_COMMIT` is provided, otherwise `unknown`). Use this event to correlate runtime logs with an image tag: for a release, `version` should match the image and Helm tag (currently `0.2.7`), while `build_id` can be matched to the immutable commit-tagged image and deployment revision. Both fields are explicitly `unknown` when unavailable; no configuration values are included.
+Every process emits one `service_version` event during startup with `version` (the installed `bifrost-budget` package version) and `build_id` (a validated Git SHA when `BIFROST_BUILD_SHA`, `GIT_SHA`, or `SOURCE_COMMIT` is provided, otherwise `unknown`). Use this event to correlate runtime logs with an image tag: for a release, `version` should match the image and Helm tag (currently `0.3.0`), while `build_id` can be matched to the immutable commit-tagged image and deployment revision. Both fields are explicitly `unknown` when unavailable; no configuration values are included.
 
-### Safe maximal diagnostics (0.2.7)
+For a short-lived local diagnostic run only, set `BIFROST_LOG_RAW_HEADERS=true`. Each inbound Streamable HTTP tool request then emits an `inbound_request_headers_cleartext` event containing every header value exactly as received. This is disabled by default and must not be enabled in shared, staging, or production environments because it can log bearer tokens, cookies, and API keys.
+
+### Safe maximal diagnostics (0.3.0)
 
 The `inbound_request_diagnostics` event records every inbound header as `name`, `present`, `value_type`, `value_length`, `value_fingerprint`, and `sensitive`; it never records a header value. Credential-like names are classified sensitive regardless of spelling. Authorization adds `header_present`, `scheme`, `token_length`, `token_fingerprint`, `token_segment_count`, `token_segment_lengths`, `decode_success`, `decode_failure_reason`, `claim_keys`, `claim_metadata`, and `duplicate_claim_keys`. Each `claim_metadata` entry contains only `key`, `value_type`, `value_length`, and `value_fingerprint`.
 
 Identity diagnostics explicitly include `selected_identity_claim`, `identity_extraction_source`, `identity_selection_reason`, `identity_fingerprint`, `identity_length`, `name_present`, and `name_usable`. Governance request/response diagnostics distinguish `inbound_credential: "pingidentity_authorization"` from `outbound_auth_mode: "admin_api_key"` and include only `admin_credential_fingerprint` and `admin_credential_length`. Fingerprints are keyed HMAC-SHA-256 prefixes (the optional `BIFROST_DIAGNOSTIC_FINGERPRINT_KEY` controls the key).
 
-**Security warning:** diagnostics are masked or fingerprinted only. They must never be treated as a substitute for access controls. Logs must never contain raw tokens, decoded claim values, identities (including names, subjects, or email addresses), API keys, virtual keys, or `Authorization` header values. Do not add raw values to debug statements, exception text, support tickets, or reversible examples. Fingerprints are truncated SHA-256 correlation values and should still be handled as sensitive operational data.
+**Security warning:** the default diagnostics are masked or fingerprinted only. They must never be treated as a substitute for access controls. The raw-header diagnostic flag is an explicit exception for local testing and must remain disabled outside that test window. Fingerprints are truncated SHA-256 correlation values and should still be handled as sensitive operational data.
 
 ### Distinguish the two credentials
 
@@ -148,7 +150,7 @@ Install:
 helm upgrade --install bifrost-budget charts/bifrost-budget \
   --namespace bifrost-budget \
   --create-namespace \
-  --set image.tag=0.2.7 \
+  --set image.tag=0.3.0 \
   --set ingress.enabled=true \
   --set ingress.className=traefik \
   --set ingress.hosts[0].host=bifrost-budget.example.internal \
