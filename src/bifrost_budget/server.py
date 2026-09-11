@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Literal
 
 from fastapi.responses import JSONResponse, Response
@@ -13,6 +14,7 @@ from .logging import (
     _decode_jwt_claims,
     build_credential_trace,
     extract_identity_from_authorization,
+    header_diagnostics,
     log_event,
     select_identity_claim,
 )
@@ -33,7 +35,7 @@ def create_server() -> MCPServer[object]:
         title=SERVER_TITLE,
         description=SERVER_DESCRIPTION,
         instructions=SERVER_INSTRUCTIONS,
-        version="0.2.6",
+        version="0.2.7",
     )
 
     @server.custom_route("/healthz", ["GET"], include_in_schema=False)
@@ -79,6 +81,8 @@ def create_server() -> MCPServer[object]:
             selected_identity_claim=caller_identity.get("selected_identity_claim"),
             identity_extraction_source=caller_identity.get("identity_extraction_source"),
             identity_selection_reason=caller_identity.get("identity_selection_reason"),
+            name_present=caller_identity.get("name_present"),
+            name_usable=caller_identity.get("name_usable"),
         )
         try:
             async with BifrostClient(settings) as client:
@@ -127,6 +131,19 @@ def _resolve_credential(
 
     headers = ctx.headers if ctx is not None else None
     if headers:
+        request_id = getattr(ctx, "request_id", None)
+        log_event(
+            logging.INFO,
+            "inbound_request_diagnostics",
+            transport="streamable-http",
+            process_id=os.getpid(),
+            method=getattr(ctx, "method", None),
+            path=getattr(ctx, "path", None),
+            request_id_fingerprint=build_credential_trace(
+                str(request_id), auth_source="request_id", credential_mode="virtual_key"
+            ).get("token_fingerprint") if request_id else None,
+            headers=header_diagnostics(headers),
+        )
         authorization = headers.get("authorization") or headers.get("Authorization")
         if authorization and authorization.strip():
             authorization_trace = build_credential_trace(
@@ -165,6 +182,9 @@ def _resolve_credential(
                     "selected_identity_claim": selection["claim"],
                     "identity_extraction_source": "raw_authorization_jwt",
                     "identity_selection_reason": selection["reason"],
+                    "name_present": "name" in (claims or {}),
+                    "name_usable": isinstance((claims or {}).get("name"), str) and bool((claims or {}).get("name", "").strip()),
+                    "identity_length": len(identity),
                 }
             )
             return authorization, "request_header:authorization", "authorization", {

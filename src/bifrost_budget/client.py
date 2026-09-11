@@ -127,6 +127,9 @@ class BifrostClient:
             request_url=user_lookup_url,
             outbound_auth_mode="admin_api_key",
             inbound_credential="pingidentity_authorization",
+            inbound_credential_length=len(user_identifier.strip()),
+            admin_credential_fingerprint=fingerprint_value(admin_api_key),
+            admin_credential_length=len(admin_api_key.strip()),
             **search_trace,
         )
         response = await self._client.get(
@@ -139,6 +142,8 @@ class BifrostClient:
             request_url=user_lookup_url,
             status_code=response.status_code,
             outbound_auth_mode="admin_api_key",
+            admin_credential_fingerprint=fingerprint_value(admin_api_key),
+            admin_credential_length=len(admin_api_key.strip()),
             **search_trace,
         )
         if response.status_code >= 400:

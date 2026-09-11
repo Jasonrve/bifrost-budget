@@ -16,7 +16,14 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.server.mcpserver.exceptions import ToolError
 
 from bifrost_budget.client import BifrostClient
-from bifrost_budget.logging import build_credential_trace, configure_logging, fingerprint_value, service_version_info
+from bifrost_budget.logging import (
+    authorization_diagnostics,
+    build_credential_trace,
+    configure_logging,
+    fingerprint_value,
+    header_diagnostics,
+    service_version_info,
+)
 from bifrost_budget import __version__
 from bifrost_budget.__main__ import main
 from bifrost_budget.normalization import normalize_quota_payload
@@ -47,7 +54,7 @@ def test_main_emits_service_version_without_sensitive_configuration(
     assert '"build_id":"abc123deadbeef"' in log_text
     assert "admin-secret" not in log_text
     assert "Authorization" not in log_text
-    assert __version__ == "0.2.6"
+    assert __version__ == "0.2.7"
 
 
 def test_service_version_uses_unknown_for_missing_metadata_and_invalid_build_id(
@@ -62,6 +69,24 @@ def test_service_version_uses_unknown_for_missing_metadata_and_invalid_build_id(
     )
 
     assert service_version_info() == {"version": "unknown", "build_id": "unknown"}
+
+
+def test_maximal_diagnostics_never_include_header_or_claim_values() -> None:
+    token = _make_jwt({"client_id": "client-secret", "iss": "issuer", "sub": "subject", "name": "Alice"})
+    authorization = f"Bearer {token}"
+    headers = {"Authorization": authorization, "Cookie": "session-cookie", "X-Request-ID": "request-123"}
+
+    header_trace = header_diagnostics(headers)
+    auth_trace = authorization_diagnostics(authorization)
+    serialized = json.dumps({"headers": header_trace, "authorization": auth_trace})
+
+    assert [item["name"] for item in header_trace] == ["authorization", "cookie", "x-request-id"]
+    assert all(set(item) == {"name", "present", "value_type", "value_length", "value_fingerprint", "sensitive"} for item in header_trace)
+    assert auth_trace["decode_success"] is True
+    assert auth_trace["claim_keys"] == ["client_id", "iss", "name", "sub"]
+    assert auth_trace["token_segment_count"] == 3
+    for secret in (authorization, token, "client-secret", "issuer", "subject", "Alice", "session-cookie", "request-123"):
+        assert secret not in serialized
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -32,6 +33,8 @@ SAFE_JWT_CLAIM_KEYS = (
 )
 IDENTITY_CLAIM_PRIORITY = ("name", "preferred_username", "email", "upn", "sub", "uid", "user_id")
 _BUILD_ID_PATTERN = re.compile(r"^[0-9a-fA-F]{7,64}$")
+_DIAGNOSTIC_KEY = "bifrost-budget-safe-diagnostics-v1"
+_SENSITIVE_HEADER_WORDS = ("authorization", "cookie", "credential", "password", "secret", "token", "api-key", "apikey", "proxy-auth")
 
 
 def configure_logging(level: str | None = None) -> logging.Logger:
@@ -71,8 +74,79 @@ def fingerprint_value(value: str | None, *, length: int = 12) -> str | None:
     if not normalized:
         return None
 
-    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    digest = hmac.new(
+        os.getenv("BIFROST_DIAGNOSTIC_FINGERPRINT_KEY", _DIAGNOSTIC_KEY).encode("utf-8"),
+        normalized.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
     return digest[:length]
+
+
+def header_diagnostics(headers: Any) -> list[dict[str, Any]]:
+    """Describe inbound headers without retaining or logging their values."""
+    if not headers:
+        return []
+    result = []
+    for raw_name, raw_value in headers.items():
+        name = str(raw_name).lower()
+        value = raw_value if isinstance(raw_value, str) else str(raw_value)
+        result.append({
+            "name": name,
+            "present": bool(value),
+            "value_type": type(raw_value).__name__,
+            "value_length": len(value),
+            "value_fingerprint": fingerprint_value(value),
+            "sensitive": any(word in name for word in _SENSITIVE_HEADER_WORDS),
+        })
+    return sorted(result, key=lambda item: item["name"])
+
+
+def authorization_diagnostics(authorization: str | None) -> dict[str, Any]:
+    """Return exhaustive, value-free metadata for an Authorization header."""
+    normalized = authorization.strip() if isinstance(authorization, str) else ""
+    scheme, token = _split_authorization(normalized) if normalized else (None, "")
+    parts = token.split(".") if token else []
+    result: dict[str, Any] = {
+        "header_present": bool(normalized), "scheme": scheme,
+        "token_length": len(token), "token_fingerprint": fingerprint_value(token),
+        "token_segment_count": len(parts), "token_segment_lengths": [len(part) for part in parts],
+        "decode_success": False, "decode_failure_reason": None,
+        "invalid_json": False, "claim_keys": [], "claim_metadata": [], "duplicate_claim_keys": [],
+    }
+    if not token:
+        result["decode_failure_reason"] = "missing_token"
+        return result
+    if len(parts) < 2:
+        result["decode_failure_reason"] = "insufficient_segments"
+        return result
+    padding = "=" * (-len(parts[1]) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(parts[1] + padding).decode("utf-8")
+        pairs: list[tuple[str, Any]] = []
+        claims = json.loads(decoded, object_pairs_hook=lambda values: (pairs.extend(values) or dict(values)))
+    except (binascii.Error, UnicodeDecodeError):
+        result["decode_failure_reason"] = "invalid_base64_or_utf8"
+        return result
+    except json.JSONDecodeError:
+        result["decode_failure_reason"] = "invalid_json"
+        result["invalid_json"] = True
+        return result
+    if not isinstance(claims, dict):
+        result["decode_failure_reason"] = "claims_not_object"
+        return result
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for key, value in pairs:
+        if key in seen and key not in duplicates:
+            duplicates.append(key)
+        seen.add(key)
+        serialized = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+        result["claim_metadata"].append({
+            "key": key, "value_type": type(value).__name__, "value_length": len(serialized),
+            "value_fingerprint": fingerprint_value(serialized),
+        })
+    result.update({"decode_success": True, "claim_keys": sorted(claims), "duplicate_claim_keys": sorted(duplicates)})
+    return result
 
 
 def _split_authorization(credential: str) -> tuple[str, str]:
@@ -126,6 +200,7 @@ def build_credential_trace(
         trace["scheme"] = scheme
         trace["token_fingerprint"] = fingerprint_value(token)
         trace["token_length"] = len(token)
+        trace["authorization_diagnostics"] = authorization_diagnostics(normalized)
         claims = _decode_jwt_claims(token)
         if claims:
             trace["claim_keys"] = sorted(claims)
