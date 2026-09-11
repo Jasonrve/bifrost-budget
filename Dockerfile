@@ -15,7 +15,7 @@ RUN uv pip install --system --no-cache-dir .
 
 FROM python:3.11-slim AS runtime
 
-ARG VERSION=0.3.1
+ARG VERSION=0.3.2
 ARG BUILD_SHA=unknown
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
