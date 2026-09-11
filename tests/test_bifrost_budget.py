@@ -56,7 +56,7 @@ def test_main_emits_service_version_without_sensitive_configuration(
     assert '"build_id":"abc123deadbeef"' in log_text
     assert "admin-secret" not in log_text
     assert "Authorization" not in log_text
-    assert __version__ == "0.3.3"
+    assert __version__ == "0.3.4"
 
 
 def test_raw_header_logging_is_explicitly_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -232,29 +232,42 @@ async def test_client_forwards_authorization_header_when_present() -> None:
 
 
 @pytest.mark.asyncio
-async def test_userinfo_uses_inbound_token_and_returns_username_without_logging_pii(caplog: pytest.LogCaptureFixture) -> None:
+async def test_userinfo_uses_inbound_token_and_prefers_name_without_logging_pii(caplog: pytest.LogCaptureFixture) -> None:
     token = "Bearer ping-secret-token"
     seen: list[httpx.Request] = []
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
-        return httpx.Response(200, json={"username": "alice@example.com", "sub": "subject-secret", "roles": ["user"]})
+        return httpx.Response(200, json={"name": " Alice Example ", "preferred_username": "fallback", "sub": "subject-secret", "roles": ["user"]})
     caplog.set_level(logging.INFO, logger="bifrost_budget")
     settings = BifrostSettings(api_base_url="https://bifrost.example.com", userinfo_url="https://sso.example/userinfo")
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        username = await BifrostClient(settings, client=client).fetch_userinfo_username(authorization=token)
-    assert username == "alice@example.com"
+        username = await BifrostClient(settings, client=client).fetch_userinfo_identity(authorization=token)
+    assert username == "Alice Example"
     assert len(seen) == 1
     assert str(seen[0].url) == "https://sso.example/userinfo"
     assert seen[0].headers["authorization"] == token
     logs = "\n".join(r.getMessage() for r in caplog.records)
-    assert "alice@example.com" not in logs and "subject-secret" not in logs and token not in logs
-    assert '"selected_username_field":"username"' in logs
+    assert "Alice Example" not in logs and "subject-secret" not in logs and token not in logs
+    assert '"selected_identity_field":"name"' in logs
+
+
+@pytest.mark.asyncio
+async def test_userinfo_prefers_preferred_username_when_name_is_unusable() -> None:
+    seen: list[httpx.Request] = []
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"name": "   ", "preferred_username": " preferred-user ", "email": "ignored@example.com"})
+    settings = BifrostSettings(api_base_url="https://bifrost.example.com")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        identity = await BifrostClient(settings, client=client).fetch_userinfo_identity(authorization="Bearer inbound-token")
+    assert identity == "preferred-user"
+    assert seen[0].headers["authorization"] == "Bearer inbound-token"
 
 
 @pytest.mark.parametrize("payload,reason", [
-    ({}, "username_missing"),
-    ({"username": ""}, "username_empty"),
-    ({"username": 42}, "username_non_string"),
+    ({}, "userinfo_identity_missing"),
+    ({"name": "", "preferred_username": ""}, "userinfo_identity_missing"),
+    ({"name": 42, "preferred_username": None}, "userinfo_identity_missing"),
 ])
 @pytest.mark.asyncio
 async def test_userinfo_rejects_invalid_username(payload: dict[str, object], reason: str, caplog: pytest.LogCaptureFixture) -> None:
@@ -262,7 +275,7 @@ async def test_userinfo_rejects_invalid_username(payload: dict[str, object], rea
     settings = BifrostSettings(api_base_url="https://bifrost.example.com")
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload))) as client:
         with pytest.raises(ToolError, match="UserInfo"):
-            await BifrostClient(settings, client=client).fetch_userinfo_username(authorization="Bearer token")
+            await BifrostClient(settings, client=client).fetch_userinfo_identity(authorization="Bearer token")
     assert f'"reason_code":"{reason}"' in "\n".join(r.getMessage() for r in caplog.records)
 
 
@@ -272,7 +285,7 @@ async def test_userinfo_http_and_decode_errors_are_explicit() -> None:
     for response in (httpx.Response(401), httpx.Response(200, text="not-json")):
         async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _, response=response: response)) as client:
             with pytest.raises(ToolError, match="UserInfo"):
-                await BifrostClient(settings, client=client).fetch_userinfo_username(authorization="Bearer token")
+                await BifrostClient(settings, client=client).fetch_userinfo_identity(authorization="Bearer token")
 
 
 @pytest.mark.asyncio
@@ -400,7 +413,7 @@ async def test_streamable_http_tool_path_selects_name_claim(monkeypatch: pytest.
         async def __aexit__(self, *args: object) -> None:
             return None
 
-        async def fetch_userinfo_username(self, *, authorization: str) -> str:
+        async def fetch_userinfo_identity(self, *, authorization: str) -> str:
             seen["userinfo_authorization"] = authorization
             return "userinfo-user"
 
@@ -545,7 +558,7 @@ def test_resolve_credential_rejects_missing_or_invalid_displayname(displayname: 
 
 
 @pytest.mark.asyncio
-async def test_server_returns_explicit_displayname_error_without_userinfo(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_server_uses_userinfo_fallback_before_governance(monkeypatch: pytest.MonkeyPatch) -> None:
     token = _make_jwt({"sub": "subject", "preferred_username": "fallback", "name": "Name"})
     seen: list[str] = []
 
@@ -556,9 +569,10 @@ async def test_server_returns_explicit_displayname_error_without_userinfo(monkey
             return self
         async def __aexit__(self, *args: object) -> None:
             return None
-        async def fetch_userinfo_username(self, **kwargs: object) -> str:
+        async def fetch_userinfo_identity(self, **kwargs: object) -> str:
             seen.append("userinfo")
-            return "wrong"
+            assert kwargs["authorization"] == f"Bearer {token}"
+            return "userinfo-name"
         async def fetch_user_usage(self, **kwargs: object) -> dict[str, object]:
             seen.append("governance")
             return {}
@@ -574,9 +588,8 @@ async def test_server_returns_explicit_displayname_error_without_userinfo(monkey
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()
                     result = await session.call_tool("get_quota", {})
-    assert result.is_error is True
-    assert "displayname_missing" in str(result)
-    assert seen == []
+    assert result.is_error is False
+    assert seen == ["userinfo", "governance"]
 
 
 @pytest.mark.asyncio

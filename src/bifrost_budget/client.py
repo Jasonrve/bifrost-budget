@@ -206,8 +206,8 @@ class BifrostClient:
             queried_at=datetime.now(timezone.utc),
         ).model_dump(mode="json")
 
-    async def fetch_userinfo_username(self, *, authorization: str) -> str:
-        """Resolve the caller using the inbound token, never the governance key."""
+    async def fetch_userinfo_identity(self, *, authorization: str) -> str:
+        """Resolve the caller using inbound bearer credentials, never the governance key."""
         url = self.settings.userinfo_url
         trace = build_credential_trace(authorization, auth_source="userinfo", credential_mode="authorization")
         log_event(logging.INFO, "userinfo_request", request_url=url, auth_headers=["authorization"],
@@ -242,19 +242,21 @@ class BifrostClient:
             metadata.append(item)
         log_event(logging.INFO, "userinfo_response", request_url=url, status_code=response.status_code,
                   decode_success=True, response_field_metadata=metadata)
-        if "username" not in payload:
-            log_event(logging.ERROR, "userinfo_error", request_url=url, reason_code="username_missing", selected_username_field=None)
-            raise ToolError("PingIdentity UserInfo response is missing username")
-        username = payload["username"]
-        if not isinstance(username, str):
-            log_event(logging.ERROR, "userinfo_error", request_url=url, reason_code="username_non_string", selected_username_field="username", username_type=type(username).__name__)
-            raise ToolError("PingIdentity UserInfo username must be a string")
-        username = username.strip()
-        if not username:
-            log_event(logging.ERROR, "userinfo_error", request_url=url, reason_code="username_empty", selected_username_field="username")
-            raise ToolError("PingIdentity UserInfo username must not be empty")
-        log_event(logging.INFO, "userinfo_username_selected", request_url=url, selected_username_field="username", username_length=len(username), username_fingerprint=fingerprint_value(username), reason_code="username_selected")
-        return username
+        for field in ("name", "preferred_username"):
+            value = payload.get(field)
+            if isinstance(value, str) and value.strip():
+                identity = value.strip()
+                log_event(logging.INFO, "userinfo_identity_selected", request_url=url,
+                          selected_identity_field=field, identity_length=len(identity),
+                          identity_fingerprint=fingerprint_value(identity), reason_code="identity_selected")
+                return identity
+        log_event(logging.ERROR, "userinfo_error", request_url=url,
+                  reason_code="userinfo_identity_missing", selected_identity_field=None)
+        raise ToolError("PingIdentity UserInfo response has no usable identity (userinfo_identity_missing)")
+
+    async def fetch_userinfo_username(self, *, authorization: str) -> str:
+        """Backward-compatible alias for the UserInfo identity resolver."""
+        return await self.fetch_userinfo_identity(authorization=authorization)
 
 
 _IDENTITY_FIELDS = ("name", "username", "email", "user_name", "id")
