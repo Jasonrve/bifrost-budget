@@ -56,7 +56,7 @@ def test_main_emits_service_version_without_sensitive_configuration(
     assert '"build_id":"abc123deadbeef"' in log_text
     assert "admin-secret" not in log_text
     assert "Authorization" not in log_text
-    assert __version__ == "0.3.2"
+    assert __version__ == "0.3.3"
 
 
 def test_raw_header_logging_is_explicitly_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -379,7 +379,8 @@ async def test_streamable_http_tool_path_selects_name_claim(monkeypatch: pytest.
     name = "Ping User"
     token = _make_jwt(
         {
-            "name": name,
+            "displayname": name,
+            "name": "UserInfo Name Must Not Win",
             "preferred_username": "ping-user",
             "email": "ping-user@example.com",
             "sub": "subject-123456789012345678901234567890",
@@ -431,7 +432,7 @@ async def test_streamable_http_tool_path_selects_name_claim(monkeypatch: pytest.
                     result = await session.call_tool("get_quota", {})
 
     assert result.is_error is False
-    assert seen == {"userinfo_authorization": f"Bearer {token}", "admin_api_key": "admin-secret", "user_identifier": "userinfo-user"}
+    assert seen == {"admin_api_key": "admin-secret", "user_identifier": name}
 
 @pytest.mark.asyncio
 async def test_virtual_key_resolution_prefers_explicit_argument() -> None:
@@ -464,7 +465,8 @@ async def test_resolve_credential_uses_authorization_header_directly(caplog: pyt
     assert source == "request_header:authorization"
     assert mode == "authorization"
     assert trace["claim_keys"] == ["iss", "sub", "tenant"]
-    assert trace["identity"] == "user-123"
+    assert trace["identity"] == ""
+    assert trace["identity_selection_reason"] == "displayname_missing"
     log_text = "\n".join(record.getMessage() for record in caplog.records)
     assert '"event":"auth_source_selected"' in log_text
     assert '"event":"auth_decision_complete"' in log_text
@@ -473,14 +475,15 @@ async def test_resolve_credential_uses_authorization_header_directly(caplog: pyt
 
 
 @pytest.mark.asyncio
-async def test_resolve_credential_prefers_name_claim_from_supplied_pingidentity_jwt(
+async def test_resolve_credential_prefers_displayname_claim_from_supplied_pingidentity_jwt(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     configure_logging("INFO")
     caplog.set_level(logging.INFO, logger="bifrost_budget")
     name = "Ping User"
     token = _make_jwt({
-        "name": name,
+        "displayname": name,
+        "name": "Other Name",
         "preferred_username": "ping-user",
         "email": "ping-user@example.com",
         "sub": "subject-123456789012345678901234567890",
@@ -497,11 +500,11 @@ async def test_resolve_credential_prefers_name_claim_from_supplied_pingidentity_
     assert resolved == f"Bearer {token}"
     assert source == "request_header:authorization"
     assert mode == "authorization"
-    assert trace["claim_keys"] == ["client_id", "email", "iss", "name", "preferred_username", "sub"]
+    assert trace["claim_keys"] == ["client_id", "displayname", "email", "iss", "name", "preferred_username", "sub"]
     assert trace["identity_fingerprint"] == fingerprint_value(name)
-    assert trace["selected_identity_claim"] == "name"
+    assert trace["selected_identity_claim"] == "displayname"
     assert trace["identity_extraction_source"] == "raw_authorization_jwt"
-    assert trace["identity_selection_reason"] == "selected_name_claim"
+    assert trace["identity_selection_reason"] == "displayname_selected"
     assert trace["identity"] == name
 
     def handler(_: httpx.Request) -> httpx.Response:
@@ -520,6 +523,60 @@ async def test_resolve_credential_prefers_name_claim_from_supplied_pingidentity_
     assert name not in log_text
     assert "ping-user@example.com" not in log_text
     assert token not in log_text
+
+
+@pytest.mark.parametrize(
+    "displayname,reason",
+    [(None, "displayname_missing"), ("", "displayname_invalid"), ("   ", "displayname_invalid"), (42, "displayname_invalid")],
+)
+def test_resolve_credential_rejects_missing_or_invalid_displayname(displayname: object, reason: str) -> None:
+    payload: dict[str, object] = {"sub": "subject", "preferred_username": "fallback", "name": "Name"}
+    if displayname is not None:
+        payload["displayname"] = displayname
+    token = _make_jwt(payload)
+
+    class DummyContext:
+        headers = {"authorization": f"Bearer {token}"}
+
+    settings = BifrostSettings(api_base_url="https://bifrost.example.com")
+    _, _, _, trace = _resolve_credential(None, DummyContext(), settings)
+    assert trace["identity"] == ""
+    assert trace["identity_selection_reason"] == reason
+
+
+@pytest.mark.asyncio
+async def test_server_returns_explicit_displayname_error_without_userinfo(monkeypatch: pytest.MonkeyPatch) -> None:
+    token = _make_jwt({"sub": "subject", "preferred_username": "fallback", "name": "Name"})
+    seen: list[str] = []
+
+    class FakeClient:
+        def __init__(self, settings: BifrostSettings) -> None:
+            pass
+        async def __aenter__(self) -> "FakeClient":
+            return self
+        async def __aexit__(self, *args: object) -> None:
+            return None
+        async def fetch_userinfo_username(self, **kwargs: object) -> str:
+            seen.append("userinfo")
+            return "wrong"
+        async def fetch_user_usage(self, **kwargs: object) -> dict[str, object]:
+            seen.append("governance")
+            return {}
+
+    server_module = importlib.import_module("bifrost_budget.server")
+    monkeypatch.setattr(server_module, "BifrostClient", FakeClient)
+    monkeypatch.setenv("BIFROST_API_BASE_URL", "https://bifrost.example.com")
+    monkeypatch.setenv("BIFROST_ADMIN_API_KEY", "admin-secret")
+    app = create_server().streamable_http_app(streamable_http_path="/mcp", stateless_http=True, json_response=True, transport_security=TransportSecuritySettings(allowed_hosts=["test"]))
+    async with app.router.lifespan_context(app):
+        async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://test", headers={"authorization": f"Bearer {token}"}) as http_client:
+            async with streamable_http_client("http://test/mcp", http_client=http_client, terminate_on_close=False) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    result = await session.call_tool("get_quota", {})
+    assert result.is_error is True
+    assert "displayname_missing" in str(result)
+    assert seen == []
 
 
 @pytest.mark.asyncio

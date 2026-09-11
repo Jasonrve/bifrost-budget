@@ -13,12 +13,11 @@ from .client import BifrostClient
 from .logging import (
     _decode_jwt_claims,
     build_credential_trace,
-    extract_identity_from_authorization,
     header_diagnostics,
     log_event,
     raw_header_diagnostics,
     raw_header_logging_enabled,
-    select_identity_claim,
+    extract_displayname_from_authorization,
 )
 from .settings import BifrostSettings
 
@@ -37,7 +36,7 @@ def create_server() -> MCPServer[object]:
         title=SERVER_TITLE,
         description=SERVER_DESCRIPTION,
         instructions=SERVER_INSTRUCTIONS,
-        version="0.3.2",
+        version="0.3.3",
     )
 
     @server.custom_route("/healthz", ["GET"], include_in_schema=False)
@@ -92,10 +91,13 @@ def create_server() -> MCPServer[object]:
                     raise ToolError("An incoming PingIdentity Authorization header is required")
                 if not settings.admin_api_key:
                     raise ToolError("BIFROST_ADMIN_API_KEY must be configured")
-                user_identifier = await client.fetch_userinfo_username(authorization=credential)
+                identity = caller_identity.get("identity")
+                if not identity:
+                    reason = caller_identity.get("identity_selection_reason", "displayname_missing")
+                    raise ToolError(f"Authenticated JWT displayname is unavailable ({reason})")
                 return await client.fetch_user_usage(
                     admin_api_key=settings.admin_api_key,
-                    user_identifier=user_identifier,
+                    user_identifier=identity,
                 )
         except ToolError as exc:
             log_event(logging.ERROR, "tool_error", tool="get_quota", auth_source=auth_source, error=str(exc))
@@ -175,22 +177,25 @@ def _resolve_credential(
                 outbound_auth_mode="authorization",
                 credential_identity=authorization_trace,
             )
-            # JWT claims are diagnostic only; authoritative identity comes from UserInfo.
-            identity = extract_identity_from_authorization(authorization) or ""
             _, token = authorization.strip().split(None, 1)
             claims = _decode_jwt_claims(token)
-            selection = select_identity_claim(claims)
+            selection = extract_displayname_from_authorization(authorization)
+            identity = selection.get("identity") or ""
             authorization_trace["identity_fingerprint"] = build_credential_trace(
                 identity, auth_source="identity", credential_mode="virtual_key"
             )["token_fingerprint"]
             authorization_trace.update(
                 {
-                    "selected_identity_claim": selection["claim"],
+                    "selected_identity_claim": selection["claim"] if selection.get("identity") else None,
                     "identity_extraction_source": "raw_authorization_jwt",
                     "identity_selection_reason": selection["reason"],
                     "name_present": "name" in (claims or {}),
                     "name_usable": isinstance((claims or {}).get("name"), str) and bool((claims or {}).get("name", "").strip()),
                     "identity_length": len(identity),
+                    "displayname_present": selection["present"],
+                    "displayname_type": selection["value_type"],
+                    "displayname_length": selection["length"],
+                    "displayname_fingerprint": selection["fingerprint"],
                 }
             )
             return authorization, "request_header:authorization", "authorization", {

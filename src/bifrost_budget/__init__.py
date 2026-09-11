@@ -3,4 +3,4 @@
 from .server import create_server, server
 
 __all__ = ["create_server", "server"]
-__version__ = "0.3.2"
+__version__ = "0.3.3"
