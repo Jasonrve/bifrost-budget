@@ -138,7 +138,7 @@ Install:
 helm upgrade --install bifrost-budget charts/bifrost-budget \
   --namespace bifrost-budget \
   --create-namespace \
-  --set image.tag=0.2.2 \
+  --set image.tag=0.2.3 \
   --set ingress.enabled=true \
   --set ingress.className=traefik \
   --set ingress.hosts[0].host=bifrost-budget.example.internal \
