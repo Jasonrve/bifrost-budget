@@ -14,13 +14,13 @@ This repository includes:
 
 The server exposes one primary tool:
 
-- `get_quota` — reads the non-empty trimmed `displayname` claim from the inbound PingIdentity Bearer JWT as the governance search identity, sends `GET /api/governance/users?limit=20` with the configured admin API key, selects the matching governance user, and extracts `access_profiles[*].budgets[*].current_usage`. UserInfo is not an identity fallback.
+- `get_quota` — reads the non-empty trimmed `displayname` claim from the inbound PingIdentity Bearer JWT as the governance search identity, sends `GET /api/governance/users?search=<URL-encoded-displayname>&limit=20` with the configured admin API key, selects the matching governance user, and extracts `access_profiles[*].budgets[*].current_usage`. If displayname is unavailable, UserInfo `name` then `preferred_username` is used as the selected identity.
 
 For the governance response, the server reads the top-level `users` array and compares the derived name against each user's `name`, `username`, `email`, `user_name`, and `id` fields (case-insensitively after trimming). From the first match, every budget containing `current_usage` becomes a normalized row: `current_usage` maps to `consumed`, while `limit` and `unit` are preserved; the normalized summary derives remaining values such as `limit - consumed`.
 
 Authentication is separated by purpose:
 
-- production callers send an Authorization header containing a PingIdentity token; it is sent only to `BIFROST_USERINFO_URL` and the returned `username` is used as the search identity
+- production callers send an Authorization header containing a PingIdentity token; it is sent only to `BIFROST_USERINFO_URL` when JWT identity fallback is needed, and the selected identity is sent as the URL-encoded governance `search` parameter
 - the governance request always uses `BIFROST_ADMIN_API_KEY`; the incoming user token is never used as the admin credential
 
 The tool never returns the raw virtual key. It only returns derived quota data.
@@ -35,7 +35,7 @@ Required:
 Optional:
 
 - `BIFROST_QUOTA_PATH` — defaults to `/api/governance/virtual-keys/quota`
-- `BIFROST_USERS_PATH` — defaults to `/api/governance/users?limit=20`
+- `BIFROST_USERS_PATH` — defaults to `/api/governance/users?limit=20`; the client adds/replaces `search` with the selected identity and enforces `limit=20`
 - `BIFROST_USERINFO_URL` — defaults to `https://sso-dev.sanlamcloud.co.za/as/userinfo`; retained for optional diagnostics, never used to override JWT `displayname`
 - `BIFROST_TIMEOUT_SECONDS` — defaults to `15`
 - `BIFROST_LOG_LEVEL` — defaults to `INFO`; controls the structured application logs
@@ -61,7 +61,7 @@ export BIFROST_API_BASE_URL=https://bifrost.example.com
 uv run bifrost-budget
 ```
 
-For the production usage flow, callers must send an `Authorization` header containing the PingIdentity token and the process must receive `BIFROST_ADMIN_API_KEY` through the runtime secret mechanism. The service uses only the token's `displayname` claim (not `sub`, `preferred_username`, JWT `name`, or UserInfo fields) as the governance search identity, while the governance API request uses only the admin key. Missing, empty, or non-string `displayname` returns an explicit error. Static virtual-key fallbacks are for local/dev or explicit non-production use only.
+For the production usage flow, callers must send an `Authorization` header containing the PingIdentity token and the process must receive `BIFROST_ADMIN_API_KEY` through the runtime secret mechanism. The service uses the token's `displayname` claim first, then UserInfo `name`, then UserInfo `preferred_username` as the governance search identity. The selected identity is URL-encoded in the `search` query parameter; the governance API request uses only the admin key. Missing, empty, or non-string identity values return an explicit error. Static virtual-key fallbacks are for local/dev or explicit non-production use only.
 
 Run the server over stdio:
 
@@ -75,11 +75,11 @@ uv run bifrost-budget
 
 The server emits structured JSON logs to standard output. Logs cover startup, auth-source selection, tool invocation, the governance-user request and response, matching, usage extraction, and errors. Use the event name (`event`) to group a single troubleshooting attempt; the URL, HTTP status, counts, and duration are operational context, not credentials.
 
-Every process emits one `service_version` event during startup with `version` (the installed `bifrost-budget` package version) and `build_id` (a validated Git SHA when `BIFROST_BUILD_SHA`, `GIT_SHA`, or `SOURCE_COMMIT` is provided, otherwise `unknown`). Use this event to correlate runtime logs with an image tag: for a release, `version` should match the image and Helm tag (currently `0.3.5`), while `build_id` can be matched to the immutable commit-tagged image and deployment revision. Both fields are explicitly `unknown` when unavailable; no configuration values are included.
+Every process emits one `service_version` event during startup with `version` (the installed `bifrost-budget` package version) and `build_id` (a validated Git SHA when `BIFROST_BUILD_SHA`, `GIT_SHA`, or `SOURCE_COMMIT` is provided, otherwise `unknown`). Use this event to correlate runtime logs with an image tag: for a release, `version` should match the image and Helm tag (currently `0.3.6`), while `build_id` can be matched to the immutable commit-tagged image and deployment revision. Both fields are explicitly `unknown` when unavailable; no configuration values are included.
 
 For a short-lived local diagnostic run only, set `BIFROST_LOG_RAW_HEADERS=true`. Each inbound Streamable HTTP tool request then emits an `inbound_request_headers_cleartext` event containing every header value exactly as received. This is disabled by default and must not be enabled in shared, staging, or production environments because it can log bearer tokens, cookies, and API keys.
 
-### Safe maximal diagnostics (0.3.5)
+### Safe maximal diagnostics (0.3.6)
 
 The `inbound_request_diagnostics` event records every inbound header as `name`, `present`, `value_type`, `value_length`, `value_fingerprint`, and `sensitive`; it never records a header value. Credential-like names are classified sensitive regardless of spelling. Authorization adds `header_present`, `scheme`, `token_length`, `token_fingerprint`, `token_segment_count`, `token_segment_lengths`, `decode_success`, `decode_failure_reason`, `claim_keys`, `claim_metadata`, and `duplicate_claim_keys`. Each `claim_metadata` entry contains only `key`, `value_type`, `value_length`, and `value_fingerprint`.
 
@@ -92,7 +92,7 @@ Identity diagnostics explicitly include `selected_identity_claim`, `identity_ext
 The production flow has two deliberately separate authentication paths:
 
 1. **Inbound PingIdentity credential:** the caller supplies `Authorization: Bearer ***`; the service uses JWT `displayname` first, then calls UserInfo with exactly that inbound credential when displayname is missing or invalid. UserInfo identity precedence is `name` then `preferred_username`; no raw claim, response body, identity value, or header is logged.
-2. **Outbound governance request:** the service calls `GET /api/governance/users?limit=20` with `BIFROST_ADMIN_API_KEY` as its outbound Bearer credential. The request diagnostic labels this as `outbound_auth_mode: "admin_api_key"` and `inbound_credential: "pingidentity_authorization"`; it records neither the admin key nor an Authorization header value. The inbound PingIdentity token is never reused as the admin credential.
+2. **Outbound governance request:** the service calls `GET /api/governance/users?search=<identity>&limit=20` with `BIFROST_ADMIN_API_KEY` as its outbound Bearer credential. The request diagnostic labels this as `outbound_auth_mode: "admin_api_key"` and `inbound_credential: "pingidentity_authorization"`; it records neither the admin key nor an Authorization header value. The inbound PingIdentity token is never reused as the admin credential.
 
 JWT claim diagnostics are retained for troubleshooting token decoding. The source precedence is: inbound JWT `displayname` -> UserInfo `name` -> UserInfo `preferred_username` -> explicit error. UserInfo response metadata may be retained for diagnostics, but response bodies and identity values are never logged.
 
@@ -100,7 +100,7 @@ The upstream proxy/auth middleware must preserve the original `Authorization: Be
 
 ### Interpret governance-user diagnostics
 
-The `governance_user_request` event records the request URL, `outbound_auth_mode`, the inbound credential label, and `search_identity_fingerprint` plus `search_identity_length`. `inbound_credential_length` is the length of the inbound bearer token (not the selected identity); `admin_credential_length` is the admin key length. All events for one tool call carry the same `correlation_id_fingerprint`, including UserInfo fallback events. The corresponding `governance_user_response` records the HTTP `status_code`. A successful response is followed by `user_lookup_match`, which contains:
+The `governance_user_request` event records the governance host/path, query parameter names, `search_present`, `limit`, `outbound_auth_mode`, the inbound credential label, and `search_identity_fingerprint` plus `search_identity_length`. The logged request URL never contains query values. `inbound_credential_length` is the length of the inbound bearer token (not the selected identity); `admin_credential_length` is the admin key length. All events for one tool call carry the same `correlation_id_fingerprint`, including UserInfo fallback events. The corresponding `governance_user_response` records the HTTP `status_code`. A successful response is followed by `user_lookup_match`, which contains:
 
 - `returned_user_count`: number of entries in the top-level `users` array (non-list or absent arrays are treated as zero);
 - `match_count`: number of candidates whose supported identity field matched after trimming and case-folding;
@@ -151,7 +151,7 @@ Install:
 helm upgrade --install bifrost-budget charts/bifrost-budget \
   --namespace bifrost-budget \
   --create-namespace \
-  --set image.tag=0.3.5 \
+  --set image.tag=0.3.6 \
   --set ingress.enabled=true \
   --set ingress.className=traefik \
   --set ingress.hosts[0].host=bifrost-budget.example.internal \
@@ -246,7 +246,7 @@ These examples mirror the chart's container port, service port, and `/healthz`-b
 
 ## Usage from an MCP client
 
-Clients can call `get_quota`; the production path requires the caller to provide an `Authorization` header containing a PingIdentity token with a non-empty string `displayname` claim. The server uses that claim for `GET /api/governance/users?limit=20`, authenticated with `BIFROST_ADMIN_API_KEY`.
+Clients can call `get_quota`; the production path requires the caller to provide an `Authorization` header containing a PingIdentity token with a usable identity claim. The server sends the selected identity as URL-encoded `search` in `GET /api/governance/users?search=<identity>&limit=20`, authenticated with `BIFROST_ADMIN_API_KEY`.
 
 Legacy/non-production fallback credentials can be supplied in one of three ways:
 
