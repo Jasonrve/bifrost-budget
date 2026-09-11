@@ -37,7 +37,7 @@ def create_server() -> MCPServer[object]:
         title=SERVER_TITLE,
         description=SERVER_DESCRIPTION,
         instructions=SERVER_INSTRUCTIONS,
-        version="0.3.0",
+        version="0.3.1",
     )
 
     @server.custom_route("/healthz", ["GET"], include_in_schema=False)
@@ -92,9 +92,10 @@ def create_server() -> MCPServer[object]:
                     raise ToolError("An incoming PingIdentity Authorization header is required")
                 if not settings.admin_api_key:
                     raise ToolError("BIFROST_ADMIN_API_KEY must be configured")
+                user_identifier = await client.fetch_userinfo_username(authorization=credential)
                 return await client.fetch_user_usage(
                     admin_api_key=settings.admin_api_key,
-                    user_identifier=caller_identity["identity"],
+                    user_identifier=user_identifier,
                 )
         except ToolError as exc:
             log_event(logging.ERROR, "tool_error", tool="get_quota", auth_source=auth_source, error=str(exc))
@@ -174,12 +175,8 @@ def _resolve_credential(
                 outbound_auth_mode="authorization",
                 credential_identity=authorization_trace,
             )
-            identity = extract_identity_from_authorization(authorization)
-            if not identity:
-                raise ToolError(
-                    "Authorization token did not contain a supported PingIdentity identity claim "
-                    "(name, preferred_username, email, upn, sub, uid, or user_id)"
-                )
+            # JWT claims are diagnostic only; authoritative identity comes from UserInfo.
+            identity = extract_identity_from_authorization(authorization) or ""
             _, token = authorization.strip().split(None, 1)
             claims = _decode_jwt_claims(token)
             selection = select_identity_claim(claims)

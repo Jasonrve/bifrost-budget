@@ -206,6 +206,56 @@ class BifrostClient:
             queried_at=datetime.now(timezone.utc),
         ).model_dump(mode="json")
 
+    async def fetch_userinfo_username(self, *, authorization: str) -> str:
+        """Resolve the caller using the inbound token, never the governance key."""
+        url = self.settings.userinfo_url
+        trace = build_credential_trace(authorization, auth_source="userinfo", credential_mode="authorization")
+        log_event(logging.INFO, "userinfo_request", request_url=url, auth_headers=["authorization"],
+                  inbound_credential_fingerprint=trace.get("token_fingerprint"), inbound_credential_length=trace.get("token_length"))
+        try:
+            response = await self._client.get(url, headers={"accept": "application/json", "authorization": authorization})
+        except httpx.TimeoutException as exc:
+            log_event(logging.ERROR, "userinfo_error", request_url=url, reason_code="timeout", error_type=type(exc).__name__)
+            raise ToolError("PingIdentity UserInfo request timed out") from exc
+        except httpx.RequestError as exc:
+            log_event(logging.ERROR, "userinfo_error", request_url=url, reason_code="request_failed", error_type=type(exc).__name__)
+            raise ToolError("PingIdentity UserInfo request failed") from exc
+        if response.status_code >= 400:
+            log_event(logging.ERROR, "userinfo_error", request_url=url, status_code=response.status_code,
+                      response_header_names=sorted(response.headers.keys()), reason_code="http_error")
+            raise ToolError(f"PingIdentity UserInfo lookup failed with HTTP {response.status_code}")
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            log_event(logging.ERROR, "userinfo_error", request_url=url, status_code=response.status_code,
+                      decode_success=False, reason_code="invalid_json", error_type=type(exc).__name__)
+            raise ToolError("PingIdentity UserInfo returned invalid JSON") from exc
+        if not isinstance(payload, dict):
+            log_event(logging.ERROR, "userinfo_error", request_url=url, status_code=response.status_code,
+                      decode_success=True, response_type=type(payload).__name__, reason_code="response_not_object")
+            raise ToolError("PingIdentity UserInfo response must be a JSON object")
+        metadata = []
+        for key, value in sorted(payload.items()):
+            item = {"field": str(key), "value_type": type(value).__name__, "value_length": len(value) if isinstance(value, (str, bytes, list, dict)) else None}
+            if isinstance(value, str) and value.strip():
+                item["value_fingerprint"] = fingerprint_value(value)
+            metadata.append(item)
+        log_event(logging.INFO, "userinfo_response", request_url=url, status_code=response.status_code,
+                  decode_success=True, response_field_metadata=metadata)
+        if "username" not in payload:
+            log_event(logging.ERROR, "userinfo_error", request_url=url, reason_code="username_missing", selected_username_field=None)
+            raise ToolError("PingIdentity UserInfo response is missing username")
+        username = payload["username"]
+        if not isinstance(username, str):
+            log_event(logging.ERROR, "userinfo_error", request_url=url, reason_code="username_non_string", selected_username_field="username", username_type=type(username).__name__)
+            raise ToolError("PingIdentity UserInfo username must be a string")
+        username = username.strip()
+        if not username:
+            log_event(logging.ERROR, "userinfo_error", request_url=url, reason_code="username_empty", selected_username_field="username")
+            raise ToolError("PingIdentity UserInfo username must not be empty")
+        log_event(logging.INFO, "userinfo_username_selected", request_url=url, selected_username_field="username", username_length=len(username), username_fingerprint=fingerprint_value(username), reason_code="username_selected")
+        return username
+
 
 _IDENTITY_FIELDS = ("name", "username", "email", "user_name", "id")
 
