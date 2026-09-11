@@ -191,7 +191,12 @@ async def test_client_logs_safe_401_details_before_raising(caplog: pytest.LogCap
         return httpx.Response(
             401,
             headers={"www-authenticate": 'Bearer realm="bifrost"', "content-type": "application/json"},
-            json={"error": "unauthorized", "hint": "use mapped virtual key"},
+            text=(
+                '{"error":"unauthorized","hint":"use mapped virtual key",'
+                '"token":"upstream-body-token","authorization":"Bearer upstream-body-auth",'
+                '"name":"Alice Admin","email":"alice@example.com","sub":"subject-123",'
+                '"admin_key":"upstream-admin-key"}'
+            ),
         )
 
     transport = httpx.MockTransport(handler)
@@ -212,9 +217,19 @@ async def test_client_logs_safe_401_details_before_raising(caplog: pytest.LogCap
     log_text = "\n".join(record.getMessage() for record in caplog.records)
     assert '"event":"upstream_quota_error"' in log_text
     assert '"status_code":401' in log_text
-    assert '"response_www_authenticate":"Bearer realm=\\"bifrost\\""' in log_text
-    assert '"response_body_preview":"{\\"error\\":\\"unauthorized\\",\\"hint\\":\\"use mapped virtual key\\"}"' in log_text
-    assert "auth-secret" not in log_text
+    assert '"response_header_names":["content-length","content-type","www-authenticate"]' in log_text
+    assert '"response_content_type":"application/json"' in log_text
+    assert '"error_type":"upstream_http_error"' in log_text
+    for secret in (
+        "upstream-body-token",
+        "upstream-body-auth",
+        "Alice Admin",
+        "alice@example.com",
+        "subject-123",
+        "upstream-admin-key",
+        "auth-secret",
+    ):
+        assert secret not in log_text
 
 
 @pytest.mark.asyncio

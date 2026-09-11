@@ -8,7 +8,7 @@ from typing import Any, Literal
 import httpx
 from mcp.server.mcpserver.exceptions import ToolError
 
-from .logging import build_credential_trace, fingerprint_value, log_event, safe_text_preview
+from .logging import build_credential_trace, fingerprint_value, log_event
 from .normalization import normalize_quota_payload
 from .settings import BifrostSettings
 
@@ -68,9 +68,8 @@ class BifrostClient:
                 credential_identity=credential_identity,
                 status_code=response.status_code,
                 response_header_names=sorted(response.headers.keys()),
-                response_www_authenticate=response.headers.get("www-authenticate"),
                 response_content_type=response.headers.get("content-type"),
-                response_body_preview=safe_text_preview(response.text),
+                error_type="upstream_http_error",
                 duration_ms=duration_ms,
             )
             raise ToolError(
