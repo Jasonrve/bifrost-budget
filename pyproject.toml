@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bifrost-budget"
-version = "0.3.4"
+version = "0.3.5"
 description = "Read-only MCP server for Bifrost credit and quota snapshots"
 readme = "README.md"
 requires-python = ">=3.11"

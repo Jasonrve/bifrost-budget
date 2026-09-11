@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from typing import Any, Literal
 
 from fastapi.responses import JSONResponse, Response
@@ -18,6 +19,7 @@ from .logging import (
     raw_header_diagnostics,
     raw_header_logging_enabled,
     extract_displayname_from_authorization,
+    fingerprint_value,
 )
 from .settings import BifrostSettings
 
@@ -36,7 +38,7 @@ def create_server() -> MCPServer[object]:
         title=SERVER_TITLE,
         description=SERVER_DESCRIPTION,
         instructions=SERVER_INSTRUCTIONS,
-        version="0.3.4",
+        version="0.3.5",
     )
 
     @server.custom_route("/healthz", ["GET"], include_in_schema=False)
@@ -59,7 +61,9 @@ def create_server() -> MCPServer[object]:
         ctx: Context[object] | None = None,
     ) -> dict[str, Any]:
         settings = BifrostSettings.from_env(api_base_url=api_base_url)
-        credential, auth_source, credential_mode, caller_identity = _resolve_credential(virtual_key, ctx, settings)
+        request_id = getattr(ctx, "request_id", None) if ctx is not None else None
+        correlation = {"correlation_id_fingerprint": fingerprint_value(str(request_id or uuid.uuid4()))}
+        credential, auth_source, credential_mode, caller_identity = _resolve_credential(virtual_key, ctx, settings, correlation=correlation)
         log_event(
             logging.INFO,
             "tool_invocation",
@@ -80,10 +84,12 @@ def create_server() -> MCPServer[object]:
             search_identity_fingerprint=caller_identity.get("identity_fingerprint"),
             search_identity_length=len(caller_identity["identity"]),
             selected_identity_claim=caller_identity.get("selected_identity_claim"),
+            selected_identity_source=caller_identity.get("selected_identity_source"),
             identity_extraction_source=caller_identity.get("identity_extraction_source"),
             identity_selection_reason=caller_identity.get("identity_selection_reason"),
             name_present=caller_identity.get("name_present"),
             name_usable=caller_identity.get("name_usable"),
+            **correlation,
         )
         try:
             async with BifrostClient(settings) as client:
@@ -93,13 +99,32 @@ def create_server() -> MCPServer[object]:
                     raise ToolError("BIFROST_ADMIN_API_KEY must be configured")
                 identity = caller_identity.get("identity")
                 if not identity:
-                    identity = await client.fetch_userinfo_identity(authorization=credential)
-                return await client.fetch_user_usage(
-                    admin_api_key=settings.admin_api_key,
-                    user_identifier=identity,
-                )
+                    try:
+                        identity = await client.fetch_userinfo_identity(authorization=credential, correlation=correlation)
+                    except TypeError as exc:
+                        if "correlation" not in str(exc):
+                            raise
+                        identity = await client.fetch_userinfo_identity(authorization=credential)
+                    identity_source = "userinfo.name_or_preferred_username"
+                else:
+                    identity_source = "jwt.displayname"
+                try:
+                    return await client.fetch_user_usage(
+                        admin_api_key=settings.admin_api_key,
+                        user_identifier=identity,
+                        correlation=correlation,
+                        inbound_authorization=credential,
+                        identity_source=identity_source,
+                    )
+                except TypeError as exc:
+                    if "correlation" not in str(exc):
+                        raise
+                    return await client.fetch_user_usage(
+                        admin_api_key=settings.admin_api_key, user_identifier=identity
+                    )
         except ToolError as exc:
-            log_event(logging.ERROR, "tool_error", tool="get_quota", auth_source=auth_source, error=str(exc))
+            log_event(logging.ERROR, "tool_error", tool="get_quota", auth_source=auth_source,
+                      reason_code=type(exc).__name__, error_reason=str(exc), **correlation)
             raise
 
     return server
@@ -109,7 +134,9 @@ def _resolve_credential(
     explicit: str | None,
     ctx: Context[object] | None,
     settings: BifrostSettings,
+    correlation: dict[str, Any] | None = None,
 ) -> tuple[str, str, Literal["authorization", "virtual_key"], dict[str, Any]]:
+    correlation = correlation or {}
     if explicit and explicit.strip():
         resolved = explicit.strip()
         identity_trace = build_credential_trace(
@@ -121,7 +148,7 @@ def _resolve_credential(
             logging.INFO,
             "auth_source_selected",
             source="tool_argument",
-            credential_identity=identity_trace,
+            credential_identity=identity_trace, **correlation,
         )
         log_event(
             logging.DEBUG,
@@ -129,7 +156,7 @@ def _resolve_credential(
             decision="tool_argument",
             auth_source="tool_argument",
             outbound_auth_mode="virtual_key",
-            credential_identity=identity_trace,
+            credential_identity=identity_trace, **correlation,
         )
         return resolved, "tool_argument", "virtual_key", identity_trace
 
@@ -166,7 +193,7 @@ def _resolve_credential(
                 logging.INFO,
                 "auth_source_selected",
                 source="request_header:authorization",
-                credential_identity=authorization_trace,
+                credential_identity=authorization_trace, **correlation,
             )
             log_event(
                 logging.DEBUG,
@@ -174,7 +201,7 @@ def _resolve_credential(
                 decision="authorization_passthrough",
                 auth_source="request_header:authorization",
                 outbound_auth_mode="authorization",
-                credential_identity=authorization_trace,
+                credential_identity=authorization_trace, **correlation,
             )
             _, token = authorization.strip().split(None, 1)
             claims = _decode_jwt_claims(token)
@@ -186,6 +213,7 @@ def _resolve_credential(
             authorization_trace.update(
                 {
                     "selected_identity_claim": selection["claim"] if selection.get("identity") else None,
+                    "selected_identity_source": "jwt.displayname" if selection.get("identity") else None,
                     "identity_extraction_source": "raw_authorization_jwt",
                     "identity_selection_reason": selection["reason"],
                     "name_present": "name" in (claims or {}),
@@ -214,7 +242,7 @@ def _resolve_credential(
                 logging.INFO,
                 "auth_source_selected",
                 source="request_header:x-bf-vk",
-                credential_identity=identity_trace,
+                credential_identity=identity_trace, **correlation,
             )
             log_event(
                 logging.DEBUG,
@@ -222,7 +250,7 @@ def _resolve_credential(
                 decision="request_header:x-bf-vk",
                 auth_source="request_header:x-bf-vk",
                 outbound_auth_mode="virtual_key",
-                credential_identity=identity_trace,
+                credential_identity=identity_trace, **correlation,
             )
             return credential, "request_header:x-bf-vk", "virtual_key", identity_trace
 
@@ -237,7 +265,7 @@ def _resolve_credential(
             logging.INFO,
             "auth_source_selected",
             source="environment:BIFROST_VIRTUAL_KEY",
-            credential_identity=identity_trace,
+            credential_identity=identity_trace, **correlation,
         )
         log_event(
             logging.DEBUG,
@@ -245,7 +273,7 @@ def _resolve_credential(
             decision="environment:BIFROST_VIRTUAL_KEY",
             auth_source="environment:BIFROST_VIRTUAL_KEY",
             outbound_auth_mode="virtual_key",
-            credential_identity=identity_trace,
+            credential_identity=identity_trace, **correlation,
         )
         return env_virtual_key, "environment:BIFROST_VIRTUAL_KEY", "virtual_key", identity_trace
 

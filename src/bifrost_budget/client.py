@@ -113,24 +113,37 @@ class BifrostClient:
         )
         return report.model_dump(mode="json")
 
-    async def fetch_user_usage(self, *, admin_api_key: str, user_identifier: str) -> dict[str, Any]:
+    async def fetch_user_usage(
+        self, *, admin_api_key: str, user_identifier: str,
+        correlation: dict[str, Any] | None = None,
+        inbound_authorization: str | None = None,
+        identity_source: str | None = None,
+    ) -> dict[str, Any]:
         if not admin_api_key.strip():
             raise ToolError("BIFROST_ADMIN_API_KEY must be configured")
         user_lookup_url = self.settings.users_url
         search_trace = {
             "search_identity_fingerprint": fingerprint_value(user_identifier),
             "search_identity_length": len(user_identifier.strip()),
+            "normalized_identity_fingerprint": fingerprint_value(user_identifier.casefold().strip()),
+            "normalized_identity_length": len(user_identifier.casefold().strip()),
         }
+        correlation = correlation or {}
+        inbound_trace = build_credential_trace(
+            inbound_authorization, auth_source="inbound_authorization", credential_mode="authorization"
+        ) if inbound_authorization else {}
         log_event(
             logging.INFO,
             "governance_user_request",
             request_url=user_lookup_url,
             outbound_auth_mode="admin_api_key",
             inbound_credential="pingidentity_authorization",
-            inbound_credential_length=len(user_identifier.strip()),
+            inbound_credential_fingerprint=inbound_trace.get("token_fingerprint"),
+            inbound_credential_length=inbound_trace.get("token_length"),
+            identity_source=identity_source,
             admin_credential_fingerprint=fingerprint_value(admin_api_key),
             admin_credential_length=len(admin_api_key.strip()),
-            **search_trace,
+            **correlation, **search_trace,
         )
         response = await self._client.get(
             user_lookup_url,
@@ -144,7 +157,7 @@ class BifrostClient:
             outbound_auth_mode="admin_api_key",
             admin_credential_fingerprint=fingerprint_value(admin_api_key),
             admin_credential_length=len(admin_api_key.strip()),
-            **search_trace,
+            **correlation, **search_trace,
         )
         if response.status_code >= 400:
             raise ToolError(f"Bifrost user lookup failed with HTTP {response.status_code}")
@@ -181,7 +194,7 @@ class BifrostClient:
             returned_user_count=len(users),
             match_count=len(matches),
             candidates=candidate_diagnostics,
-            **search_trace,
+            **correlation, **search_trace,
         )
         if not matches:
             raise ToolError("No Bifrost governance user matched the authenticated PingIdentity user")
@@ -206,33 +219,34 @@ class BifrostClient:
             queried_at=datetime.now(timezone.utc),
         ).model_dump(mode="json")
 
-    async def fetch_userinfo_identity(self, *, authorization: str) -> str:
+    async def fetch_userinfo_identity(self, *, authorization: str, correlation: dict[str, Any] | None = None) -> str:
         """Resolve the caller using inbound bearer credentials, never the governance key."""
         url = self.settings.userinfo_url
         trace = build_credential_trace(authorization, auth_source="userinfo", credential_mode="authorization")
+        correlation = correlation or {}
         log_event(logging.INFO, "userinfo_request", request_url=url, auth_headers=["authorization"],
-                  inbound_credential_fingerprint=trace.get("token_fingerprint"), inbound_credential_length=trace.get("token_length"))
+                  inbound_credential_fingerprint=trace.get("token_fingerprint"), inbound_credential_length=trace.get("token_length"), **correlation)
         try:
             response = await self._client.get(url, headers={"accept": "application/json", "authorization": authorization})
         except httpx.TimeoutException as exc:
-            log_event(logging.ERROR, "userinfo_error", request_url=url, reason_code="timeout", error_type=type(exc).__name__)
+            log_event(logging.ERROR, "userinfo_error", request_url=url, reason_code="timeout", error_type=type(exc).__name__, **correlation)
             raise ToolError("PingIdentity UserInfo request timed out") from exc
         except httpx.RequestError as exc:
-            log_event(logging.ERROR, "userinfo_error", request_url=url, reason_code="request_failed", error_type=type(exc).__name__)
+            log_event(logging.ERROR, "userinfo_error", request_url=url, reason_code="request_failed", error_type=type(exc).__name__, **correlation)
             raise ToolError("PingIdentity UserInfo request failed") from exc
         if response.status_code >= 400:
             log_event(logging.ERROR, "userinfo_error", request_url=url, status_code=response.status_code,
-                      response_header_names=sorted(response.headers.keys()), reason_code="http_error")
+                      response_header_names=sorted(response.headers.keys()), reason_code="http_error", **correlation)
             raise ToolError(f"PingIdentity UserInfo lookup failed with HTTP {response.status_code}")
         try:
             payload = response.json()
         except ValueError as exc:
             log_event(logging.ERROR, "userinfo_error", request_url=url, status_code=response.status_code,
-                      decode_success=False, reason_code="invalid_json", error_type=type(exc).__name__)
+                      decode_success=False, reason_code="invalid_json", error_type=type(exc).__name__, **correlation)
             raise ToolError("PingIdentity UserInfo returned invalid JSON") from exc
         if not isinstance(payload, dict):
             log_event(logging.ERROR, "userinfo_error", request_url=url, status_code=response.status_code,
-                      decode_success=True, response_type=type(payload).__name__, reason_code="response_not_object")
+                      decode_success=True, response_type=type(payload).__name__, reason_code="response_not_object", **correlation)
             raise ToolError("PingIdentity UserInfo response must be a JSON object")
         metadata = []
         for key, value in sorted(payload.items()):
@@ -241,17 +255,18 @@ class BifrostClient:
                 item["value_fingerprint"] = fingerprint_value(value)
             metadata.append(item)
         log_event(logging.INFO, "userinfo_response", request_url=url, status_code=response.status_code,
-                  decode_success=True, response_field_metadata=metadata)
+                  decode_success=True, response_field_names=sorted(payload), response_field_metadata=metadata, **correlation)
         for field in ("name", "preferred_username"):
             value = payload.get(field)
             if isinstance(value, str) and value.strip():
                 identity = value.strip()
                 log_event(logging.INFO, "userinfo_identity_selected", request_url=url,
                           selected_identity_field=field, identity_length=len(identity),
-                          identity_fingerprint=fingerprint_value(identity), reason_code="identity_selected")
+                          identity_fingerprint=fingerprint_value(identity), search_identity_length=len(identity),
+                          selected_identity_source=f"userinfo.{field}", reason_code="identity_selected", **correlation)
                 return identity
         log_event(logging.ERROR, "userinfo_error", request_url=url,
-                  reason_code="userinfo_identity_missing", selected_identity_field=None)
+                  reason_code="userinfo_identity_missing", selected_identity_field=None, **correlation)
         raise ToolError("PingIdentity UserInfo response has no usable identity (userinfo_identity_missing)")
 
     async def fetch_userinfo_username(self, *, authorization: str) -> str:
