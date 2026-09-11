@@ -75,11 +75,11 @@ uv run bifrost-budget
 
 The server emits structured JSON logs to standard output. Logs cover startup, auth-source selection, tool invocation, the governance-user request and response, matching, usage extraction, and errors. Use the event name (`event`) to group a single troubleshooting attempt; the URL, HTTP status, counts, and duration are operational context, not credentials.
 
-Every process emits one `service_version` event during startup with `version` (the installed `bifrost-budget` package version) and `build_id` (a validated Git SHA when `BIFROST_BUILD_SHA`, `GIT_SHA`, or `SOURCE_COMMIT` is provided, otherwise `unknown`). Use this event to correlate runtime logs with an image tag: for a release, `version` should match the image and Helm tag (currently `0.3.4`), while `build_id` can be matched to the immutable commit-tagged image and deployment revision. Both fields are explicitly `unknown` when unavailable; no configuration values are included.
+Every process emits one `service_version` event during startup with `version` (the installed `bifrost-budget` package version) and `build_id` (a validated Git SHA when `BIFROST_BUILD_SHA`, `GIT_SHA`, or `SOURCE_COMMIT` is provided, otherwise `unknown`). Use this event to correlate runtime logs with an image tag: for a release, `version` should match the image and Helm tag (currently `0.3.5`), while `build_id` can be matched to the immutable commit-tagged image and deployment revision. Both fields are explicitly `unknown` when unavailable; no configuration values are included.
 
 For a short-lived local diagnostic run only, set `BIFROST_LOG_RAW_HEADERS=true`. Each inbound Streamable HTTP tool request then emits an `inbound_request_headers_cleartext` event containing every header value exactly as received. This is disabled by default and must not be enabled in shared, staging, or production environments because it can log bearer tokens, cookies, and API keys.
 
-### Safe maximal diagnostics (0.3.4)
+### Safe maximal diagnostics (0.3.5)
 
 The `inbound_request_diagnostics` event records every inbound header as `name`, `present`, `value_type`, `value_length`, `value_fingerprint`, and `sensitive`; it never records a header value. Credential-like names are classified sensitive regardless of spelling. Authorization adds `header_present`, `scheme`, `token_length`, `token_fingerprint`, `token_segment_count`, `token_segment_lengths`, `decode_success`, `decode_failure_reason`, `claim_keys`, `claim_metadata`, and `duplicate_claim_keys`. Each `claim_metadata` entry contains only `key`, `value_type`, `value_length`, and `value_fingerprint`.
 
@@ -100,7 +100,7 @@ The upstream proxy/auth middleware must preserve the original `Authorization: Be
 
 ### Interpret governance-user diagnostics
 
-The `governance_user_request` event records the request URL, `outbound_auth_mode`, the inbound credential label, and `search_identity_fingerprint` plus `search_identity_length`. The corresponding `governance_user_response` records the HTTP `status_code`. A successful response is followed by `user_lookup_match`, which contains:
+The `governance_user_request` event records the request URL, `outbound_auth_mode`, the inbound credential label, and `search_identity_fingerprint` plus `search_identity_length`. `inbound_credential_length` is the length of the inbound bearer token (not the selected identity); `admin_credential_length` is the admin key length. All events for one tool call carry the same `correlation_id_fingerprint`, including UserInfo fallback events. The corresponding `governance_user_response` records the HTTP `status_code`. A successful response is followed by `user_lookup_match`, which contains:
 
 - `returned_user_count`: number of entries in the top-level `users` array (non-list or absent arrays are treated as zero);
 - `match_count`: number of candidates whose supported identity field matched after trimming and case-folding;
@@ -151,7 +151,7 @@ Install:
 helm upgrade --install bifrost-budget charts/bifrost-budget \
   --namespace bifrost-budget \
   --create-namespace \
-  --set image.tag=0.3.4 \
+  --set image.tag=0.3.5 \
   --set ingress.enabled=true \
   --set ingress.className=traefik \
   --set ingress.hosts[0].host=bifrost-budget.example.internal \
