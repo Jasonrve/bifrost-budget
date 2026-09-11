@@ -36,7 +36,7 @@ def create_server() -> MCPServer[object]:
         title=SERVER_TITLE,
         description=SERVER_DESCRIPTION,
         instructions=SERVER_INSTRUCTIONS,
-        version="0.3.3",
+        version="0.3.4",
     )
 
     @server.custom_route("/healthz", ["GET"], include_in_schema=False)
@@ -93,8 +93,7 @@ def create_server() -> MCPServer[object]:
                     raise ToolError("BIFROST_ADMIN_API_KEY must be configured")
                 identity = caller_identity.get("identity")
                 if not identity:
-                    reason = caller_identity.get("identity_selection_reason", "displayname_missing")
-                    raise ToolError(f"Authenticated JWT displayname is unavailable ({reason})")
+                    identity = await client.fetch_userinfo_identity(authorization=credential)
                 return await client.fetch_user_usage(
                     admin_api_key=settings.admin_api_key,
                     user_identifier=identity,
