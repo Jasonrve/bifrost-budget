@@ -70,23 +70,39 @@ export BIFROST_API_BASE_URL=https://bifrost.example.com
 uv run bifrost-budget
 ```
 
-## Logging
+## Logging and troubleshooting
 
-The server emits structured JSON logs to standard output for:
+The server emits structured JSON logs to standard output. Logs cover startup, auth-source selection, tool invocation, the governance-user request and response, matching, usage extraction, and errors. Use the event name (`event`) to group a single troubleshooting attempt; the URL, HTTP status, counts, and duration are operational context, not credentials.
 
-- startup
-- auth source selection
-- tool invocation
-- upstream quota requests and responses
-- errors, including missing/invalid credentials, upstream failures, invalid JSON, and no matching governance user
+**Security warning:** diagnostics are masked or fingerprinted only. They must never be treated as a substitute for access controls. Logs must never contain raw tokens, decoded claim values, identities (including names, subjects, or email addresses), API keys, virtual keys, or `Authorization` header values. Do not add raw values to debug statements, exception text, support tickets, or reversible examples. Fingerprints are truncated SHA-256 correlation values and should still be handled as sensitive operational data.
 
-Tokens, Authorization header values, admin API keys, virtual keys, and sensitive token claims are never logged. Diagnostics record only safe event metadata, masked/non-reversible fingerprints, header names, status codes, counts, and timing; identifiers used for correlation are masked or fingerprinted. A no-match response raises `No Bifrost governance user matched the authenticated PingIdentity user` without logging the unmatched identity. Upstream HTTP errors and invalid JSON are returned as tool errors with status/type context, while malformed budget entries are skipped and counted.
+### Distinguish the two credentials
 
-### Troubleshooting PingIdentity user matching
+The production flow has two deliberately separate authentication paths:
 
-User lookup diagnostics include the governance request URL and status, returned user count, the derived search identity's non-reversible fingerprint and length, and per-candidate identity field names, fingerprints, field metadata, match reason, reason detail, and matched fields. Reason details distinguish a successful match, absent supported fields, non-string fields, and normalized value mismatches without exposing values. These fields show whether a PingIdentity `sub` (or another supported claim) maps to a governance `name`, `username`, `email`, `user_name`, or `id` without exposing the values. Logs explicitly distinguish the inbound PingIdentity credential from the outbound `BIFROST_ADMIN_API_KEY` request.
+1. **Inbound PingIdentity credential:** the caller supplies `Authorization: Bearer <token>`. The service inspects the token locally to identify the caller. Its safe diagnostic trace can include `auth_source`, `credential_mode`, `token_present`, `scheme`, `token_length`, `token_fingerprint`, `claim_keys`, per-claim `claim_fingerprints`, per-claim `claim_lengths`, and the selected `identity_fingerprint`. Claim values themselves are never logged.
+2. **Outbound governance request:** the service calls `GET /api/governance/users?limit=20` with `BIFROST_ADMIN_API_KEY` as its outbound Bearer credential. The request diagnostic labels this as `outbound_auth_mode: "admin_api_key"` and `inbound_credential: "pingidentity_authorization"`; it records neither the admin key nor an Authorization header value. The inbound PingIdentity token is never reused as the admin credential.
 
-Warning: diagnostics are masked only. They must never be treated as a substitute for access controls, and logs must not contain raw tokens, decoded claim values, email/name/subject values, API keys, or Authorization headers. Fingerprints are intended for correlation and should still be handled as sensitive operational data.
+The selected identity claim follows this priority: `name`, `preferred_username`, `email`, `upn`, `sub`, `uid`, then `user_id`. The diagnostic `claim_keys` list tells you which safe claims were present; compare claim fingerprints and lengths with the derived search identity fingerprint and length to confirm which claim was selected without revealing its value. A malformed or non-JWT credential may have no claim diagnostics and cannot provide a usable identity.
+
+### Interpret governance-user diagnostics
+
+The `governance_user_request` event records the request URL, `outbound_auth_mode`, the inbound credential label, and `search_identity_fingerprint` plus `search_identity_length`. The corresponding `governance_user_response` records the HTTP `status_code`. A successful response is followed by `user_lookup_match`, which contains:
+
+- `returned_user_count`: number of entries in the top-level `users` array (non-list or absent arrays are treated as zero);
+- `match_count`: number of candidates whose supported identity field matched after trimming and case-folding;
+- `candidates`: safe per-candidate metadata, including `candidate_index`, supported `identity_fields`, masked `identity_fingerprints`, and `field_metadata` (`field`, `present`, `value_type`, and, for non-empty strings, fingerprint and trimmed length);
+- `match`: whether the candidate matched;
+- `matched_fields`: the supported fields that matched (`name`, `username`, `email`, `user_name`, or `id`);
+- `match_reason` and `match_reason_detail`: normally `matched`; otherwise the detail identifies `field_absent`, `field_non_string`, or `normalized_mismatch`.
+
+Use these fields to determine whether the PingIdentity-derived identity reached the governance API, whether the API returned candidates, and why each candidate did or did not match. No candidate value is included. On a match, the first matching candidate supplies its `access_profiles[*].budgets[*]`; budgets without `current_usage` are skipped and reported through `malformed_budget_count`.
+
+### Success and no-match behavior
+
+For a successful lookup, expect HTTP 2xx from the governance endpoint, a `user_lookup_match` event with `match_count` greater than zero, and a `usage_extraction` event with the extracted `budget_count`. The tool returns normalized budget rows and a summary with derived totals and remaining values.
+
+If `match_count` is zero, the tool raises `No Bifrost governance user matched the authenticated PingIdentity user` and returns no usage report. This is an expected, actionable no-match outcome—not evidence that the caller's identity should be added to logs. HTTP errors and invalid JSON from the governance endpoint fail the tool with status/type context; they do not expose credential values.
 
 ## Container
 
@@ -126,7 +142,7 @@ helm upgrade --install bifrost-budget charts/bifrost-budget \
   --set ingress.enabled=true \
   --set ingress.className=traefik \
   --set ingress.hosts[0].host=bifrost-budget.example.internal \
-  --set env.apiBaseUrl=https://bifrost.oly.workside.win
+  --set env.apiBaseUrl=https://bifrost.example.com
 ```
 
 For production, create a Kubernetes Secret through your approved secret-management process and configure the chart's admin-key reference. The chart wiring is:
@@ -154,7 +170,7 @@ The chart configures readiness and liveness probes against `/healthz` and expose
 
 ## Kubernetes examples
 
-The Helm chart is the primary production path, but these plain Kubernetes manifests show the same container wiring in a copy-paste friendly form. They use the GHCR image published by CI (`ghcr.io/jasonrve/bifrost-budget:0.2.2`) and keep auth header-first, so no static Bifrost token is required for production use.
+The Helm chart is the primary production path, but these plain Kubernetes manifests show the same container wiring in a copy-paste friendly form. Replace the illustrative image reference (`registry.example.com/your-org/bifrost-budget:<version>`) with an image approved for your environment; keep auth header-first, so no static Bifrost token is required for production use.
 
 Deployment:
 
@@ -175,7 +191,7 @@ spec:
     spec:
       containers:
         - name: bifrost-budget
-          image: ghcr.io/jasonrve/bifrost-budget:0.2.2
+          image: registry.example.com/your-org/bifrost-budget:<version>
           ports:
             - name: http
               containerPort: 8080

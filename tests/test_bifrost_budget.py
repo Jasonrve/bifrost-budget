@@ -462,6 +462,65 @@ async def test_user_usage_logs_masked_candidate_match_metadata(caplog: pytest.Lo
 
 
 @pytest.mark.asyncio
+async def test_successful_user_lookup_logs_only_masked_identity_diagnostics(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    configure_logging("INFO")
+    caplog.set_level(logging.INFO, logger="bifrost_budget")
+    email = "alice.sensitive@example.com"
+    name = "Alice Sensitive"
+    subject = "ping-subject-sensitive"
+    token = _make_jwt({"name": name, "email": email, "sub": subject, "iss": "https://issuer.example.com"})
+    authorization = f"Bearer {token}"
+    seen: dict[str, str | None] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["authorization"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"users": [{
+            "name": name,
+            "email": email,
+            "id": "candidate-id-sensitive",
+            "access_profiles": [{"budgets": [{"name": "daily", "limit": 10, "current_usage": 2}]}],
+        }]})
+
+    settings = BifrostSettings(api_base_url="https://bifrost.example.com")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://bifrost.example.com") as client:
+        bifrost = BifrostClient(settings, client=client)
+        report = await bifrost.fetch_user_usage(
+            admin_api_key="admin-api-key-sensitive",
+            user_identifier=email,
+        )
+
+    assert seen == {
+        "url": "https://bifrost.example.com/api/governance/users?limit=20",
+        "authorization": "Bearer admin-api-key-sensitive",
+    }
+    assert report["budgets"][0]["consumed"] == 2
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert '"event":"governance_user_request"' in log_text
+    assert '"event":"governance_user_response"' in log_text
+    assert '"event":"user_lookup_match"' in log_text
+    assert '"request_url":"https://bifrost.example.com/api/governance/users?limit=20"' in log_text
+    assert '"status_code":200' in log_text
+    assert '"returned_user_count":1' in log_text
+    assert '"match_count":1' in log_text
+    assert '"match_reason":"matched"' in log_text
+    assert '"identity_fields":["email","id","name"]' in log_text
+    assert '"search_identity_length":27' in log_text
+    email_fingerprint = fingerprint_value(email)
+    assert email_fingerprint is not None
+    assert email_fingerprint in log_text
+    assert email not in log_text
+    assert name not in log_text
+    assert subject not in log_text
+    assert "candidate-id-sensitive" not in log_text
+    assert token not in log_text
+    assert authorization not in log_text
+    assert "admin-api-key-sensitive" not in log_text
+
+
+@pytest.mark.asyncio
 async def test_user_usage_logs_explicit_candidate_field_reasons_without_values(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
