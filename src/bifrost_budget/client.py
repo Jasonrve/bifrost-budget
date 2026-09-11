@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import logging
 import time
 from typing import Any, Literal
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 from mcp.server.mcpserver.exceptions import ToolError
@@ -121,7 +122,17 @@ class BifrostClient:
     ) -> dict[str, Any]:
         if not admin_api_key.strip():
             raise ToolError("BIFROST_ADMIN_API_KEY must be configured")
-        user_lookup_url = self.settings.users_url
+        user_lookup_url = _build_governance_users_url(self.settings.users_url, user_identifier)
+        request_parts = urlsplit(user_lookup_url)
+        query_parameters = dict(parse_qsl(request_parts.query, keep_blank_values=True))
+        request_metadata = {
+            "request_host": request_parts.netloc,
+            "request_path": request_parts.path,
+            "request_url": urlunsplit((request_parts.scheme, request_parts.netloc, request_parts.path, "", "")),
+            "query_parameter_names": sorted(query_parameters),
+            "search_present": bool(query_parameters.get("search")),
+            "limit": query_parameters.get("limit"),
+        }
         search_trace = {
             "search_identity_fingerprint": fingerprint_value(user_identifier),
             "search_identity_length": len(user_identifier.strip()),
@@ -135,7 +146,6 @@ class BifrostClient:
         log_event(
             logging.INFO,
             "governance_user_request",
-            request_url=user_lookup_url,
             outbound_auth_mode="admin_api_key",
             inbound_credential="pingidentity_authorization",
             inbound_credential_fingerprint=inbound_trace.get("token_fingerprint"),
@@ -143,6 +153,7 @@ class BifrostClient:
             identity_source=identity_source,
             admin_credential_fingerprint=fingerprint_value(admin_api_key),
             admin_credential_length=len(admin_api_key.strip()),
+            **request_metadata,
             **correlation, **search_trace,
         )
         response = await self._client.get(
@@ -152,11 +163,11 @@ class BifrostClient:
         log_event(
             logging.INFO,
             "governance_user_response",
-            request_url=user_lookup_url,
             status_code=response.status_code,
             outbound_auth_mode="admin_api_key",
             admin_credential_fingerprint=fingerprint_value(admin_api_key),
             admin_credential_length=len(admin_api_key.strip()),
+            **request_metadata,
             **correlation, **search_trace,
         )
         if response.status_code >= 400:
@@ -189,11 +200,11 @@ class BifrostClient:
         log_event(
             logging.INFO,
             "user_lookup_match",
-            request_url=user_lookup_url,
             status_code=response.status_code,
             returned_user_count=len(users),
             match_count=len(matches),
             candidates=candidate_diagnostics,
+            **request_metadata,
             **correlation, **search_trace,
         )
         if not matches:
@@ -319,6 +330,15 @@ def _matching_fields(user: dict[str, Any], identifier: str) -> list[str]:
         for key in _IDENTITY_FIELDS
         if isinstance(user.get(key), str) and user[key].casefold().strip() == needle
     ]
+
+
+def _build_governance_users_url(base_url: str, user_identifier: str) -> str:
+    """Add the selected identity and bounded page size using URL-safe encoding."""
+    parts = urlsplit(base_url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query["search"] = user_identifier.strip()
+    query["limit"] = "20"
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 
 def _user_matches(user: dict[str, Any], identifier: str) -> bool:

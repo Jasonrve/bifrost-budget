@@ -56,7 +56,7 @@ def test_main_emits_service_version_without_sensitive_configuration(
     assert '"build_id":"abc123deadbeef"' in log_text
     assert "admin-secret" not in log_text
     assert "Authorization" not in log_text
-    assert __version__ == "0.3.5"
+    assert __version__ == "0.3.6"
 
 
 def test_raw_header_logging_is_explicitly_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -644,10 +644,58 @@ async def test_user_usage_uses_admin_key_and_ping_identity_separately() -> None:
     finally:
         await client.aclose()
 
-    assert seen["url"] == "https://bifrost.example.com/api/governance/users?limit=20"
+    assert seen["url"] == "https://bifrost.example.com/api/governance/users?limit=20&search=alice%40example.com"
     assert seen["authorization"] == "Bearer admin-secret"
     assert report["budgets"][0]["consumed"] == 27
     assert report["summary"]["remaining_total"] == 73
+
+
+@pytest.mark.asyncio
+async def test_user_usage_searches_beyond_default_first_page_and_encodes_identity() -> None:
+    seen: dict[str, object] = {}
+    users = [{"name": f"other-{index}"} for index in range(20)]
+    users.append({
+        "name": "A user+tag@example.com",
+        "access_profiles": [{"budgets": [{"name": "daily", "limit": 10, "current_usage": 3}]}],
+    })
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["authorization"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"users": users})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://bifrost.example.com") as client:
+        report = await BifrostClient(
+            BifrostSettings(api_base_url="https://bifrost.example.com"), client=client
+        ).fetch_user_usage(admin_api_key="admin-secret", user_identifier="A user+tag@example.com")
+
+    assert seen["url"] == (
+        "https://bifrost.example.com/api/governance/users?limit=20&search=A+user%2Btag%40example.com"
+    )
+    assert seen["authorization"] == "Bearer admin-secret"
+    assert report["summary"]["remaining_total"] == 7
+
+
+@pytest.mark.asyncio
+async def test_user_usage_diagnostics_expose_query_shape_without_search_value(caplog: pytest.LogCaptureFixture) -> None:
+    configure_logging("INFO")
+    caplog.set_level(logging.INFO, logger="bifrost_budget")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, json={"users": [{"name": "alice", "access_profiles": []}]})
+        ),
+        base_url="https://bifrost.example.com",
+    ) as client:
+        await BifrostClient(BifrostSettings(api_base_url="https://bifrost.example.com"), client=client).fetch_user_usage(
+            admin_api_key="admin-secret", user_identifier="alice"
+        )
+
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert '"query_parameter_names":["limit","search"]' in log_text
+    assert '"search_present":true' in log_text
+    assert '"limit":"20"' in log_text
+    assert "alice" not in log_text
 
 
 @pytest.mark.asyncio
@@ -693,7 +741,7 @@ async def test_user_usage_raises_tool_error_when_pingidentity_user_has_no_match(
     finally:
         await client.aclose()
 
-    assert seen["url"] == "https://bifrost.example.com/api/governance/users?limit=20"
+    assert seen["url"] == "https://bifrost.example.com/api/governance/users?limit=20&search=pingidentity-user%40example.com"
     assert seen["authorization"] == "Bearer admin-secret"
     log_text = "\n".join(record.getMessage() for record in caplog.records)
     assert '"event":"user_lookup_match"' in log_text
@@ -764,7 +812,7 @@ async def test_successful_user_lookup_logs_only_masked_identity_diagnostics(
         )
 
     assert seen == {
-        "url": "https://bifrost.example.com/api/governance/users?limit=20",
+        "url": "https://bifrost.example.com/api/governance/users?limit=20&search=alice.sensitive%40example.com",
         "authorization": "Bearer admin-api-key-sensitive",
     }
     assert report["budgets"][0]["consumed"] == 2
@@ -772,7 +820,7 @@ async def test_successful_user_lookup_logs_only_masked_identity_diagnostics(
     assert '"event":"governance_user_request"' in log_text
     assert '"event":"governance_user_response"' in log_text
     assert '"event":"user_lookup_match"' in log_text
-    assert '"request_url":"https://bifrost.example.com/api/governance/users?limit=20"' in log_text
+    assert '"request_url":"https://bifrost.example.com/api/governance/users"' in log_text
     assert '"status_code":200' in log_text
     assert '"returned_user_count":1' in log_text
     assert '"match_count":1' in log_text
