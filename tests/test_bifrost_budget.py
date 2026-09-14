@@ -22,9 +22,9 @@ from bifrost_budget.logging import (
     configure_logging,
     fingerprint_value,
     header_diagnostics,
-    raw_header_diagnostics,
-    raw_header_logging_enabled,
+
     service_version_info,
+    _sanitize_log_value,
 )
 from bifrost_budget import __version__
 from bifrost_budget.__main__ import main
@@ -56,18 +56,8 @@ def test_main_emits_service_version_without_sensitive_configuration(
     assert '"build_id":"abc123deadbeef"' in log_text
     assert "admin-secret" not in log_text
     assert "Authorization" not in log_text
-    assert __version__ == "0.3.7"
+    assert __version__ == "0.3.8"
 
-
-def test_raw_header_logging_is_explicitly_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
-    headers = {"Authorization": "Bearer test-token", "X-Debug": "clear-text-value"}
-
-    monkeypatch.delenv("BIFROST_LOG_RAW_HEADERS", raising=False)
-    assert raw_header_logging_enabled() is False
-    assert raw_header_diagnostics(headers) == {"Authorization": "Bearer test-token", "X-Debug": "clear-text-value"}
-
-    monkeypatch.setenv("BIFROST_LOG_RAW_HEADERS", "true")
-    assert raw_header_logging_enabled() is True
 
 
 def test_service_version_uses_unknown_for_missing_metadata_and_invalid_build_id(
@@ -82,6 +72,11 @@ def test_service_version_uses_unknown_for_missing_metadata_and_invalid_build_id(
     )
 
     assert service_version_info() == {"version": "unknown", "build_id": "unknown"}
+
+
+def test_log_value_sanitizer_removes_url_query_and_fragment() -> None:
+    secret_url = "https://example.test/api/users?search=Alice%40example.test&token=secret#fragment"
+    assert _sanitize_log_value(secret_url) == "https://example.test/api/users"
 
 
 def test_maximal_diagnostics_never_include_header_or_claim_values() -> None:
