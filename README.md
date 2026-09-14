@@ -47,7 +47,7 @@ Structured JSON logs contain event names, status codes, host/path metadata, quer
 
 ## Immutable container usage
 
-Build locally with `docker build -t bifrost-budget:0.3.8 .`. The image runs as UID/GID 10001, drops Linux capabilities, and is designed for a read-only root filesystem. In production, use the immutable commit SHA or release tag published by CI rather than `latest`:
+Build locally with `docker build -t bifrost-budget:0.3.9 .`. The image runs as UID/GID 10001, drops Linux capabilities, and is designed for a read-only root filesystem. In production, use the immutable commit SHA or release tag published by CI rather than `latest`. CI derives the release tag from `pyproject.toml` and refuses to publish if that semantic version already exists in GHCR; the SHA and `latest` tags are intentionally explicit rolling tags:
 
 ```bash
 docker run --read-only --user 10001:10001 -p 8080:8080 \
@@ -61,7 +61,7 @@ docker run --read-only --user 10001:10001 -p 8080:8080 \
 ```bash
 helm upgrade --install bifrost-budget charts/bifrost-budget \
   --namespace bifrost-budget --create-namespace \
-  --set image.tag=0.3.8 \
+  --set image.tag=0.3.9 \
   --set env.apiBaseUrl=https://bifrost.example.com \
   --set env.adminApiKey.existingSecret=bifrost-budget-admin
 ```

@@ -42,9 +42,13 @@ jobs:
         run: |
           VERSION=$(python - <<'PY'
           import tomllib
+          import re
 
           with open("pyproject.toml", "rb") as pyproject:
-              print(tomllib.load(pyproject)["project"]["version"])
+              version = tomllib.load(pyproject)["project"]["version"]
+          if not re.fullmatch(r"0\.[0-9]+\.[0-9]+", version):
+              raise SystemExit(f"not a supported semantic release version: {version}")
+          print(version)
           PY
           )
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
@@ -55,6 +59,19 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Refuse existing release image tag
+        if: github.ref == 'refs/heads/main'
+        run: |
+          # Commit SHA and latest are intentionally mutable/rolling tags. The
+          # semantic version tag is a release pointer and must never move.
+          # Check immediately before the push so chart-only changes cannot
+          # silently republish an existing release. A concurrent publisher may
+          # still win the race; registry immutability policy must reject it.
+          if docker manifest inspect "ghcr.io/jasonrve/bifrost-budget:${VERSION}" >/dev/null 2>&1; then
+            echo "Refusing to publish existing release tag ${VERSION}" >&2
+            exit 1
+          fi
+          echo "Release tag ${VERSION} is not present; SHA/latest remain explicit rolling tags."
       - name: Build image
         uses: docker/build-push-action@v6
         with:
