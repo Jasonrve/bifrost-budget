@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 
 class BudgetItem(BaseModel):
     name: str
+    current_usage: float | int | None = None
+    max_limit: float | int | None = None
     limit: float | int | None = None
     consumed: float | int | None = None
     remaining: float | int | None = None
@@ -25,6 +27,9 @@ class QuotaSummary(BaseModel):
     consumed_total: float | int | None = None
     remaining_total: float | int | None = None
     exhausted_budgets: int = 0
+    current_usage: float | int | None = None
+    max_limit: float | int | None = None
+    remaining: float | int | None = None
 
 
 class QuotaReport(BaseModel):
