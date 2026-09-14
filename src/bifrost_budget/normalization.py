@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import datetime
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
 from .models import BudgetItem, QuotaReport, QuotaSummary
@@ -32,9 +33,9 @@ def normalize_quota_payload(payload: Any, *, endpoint: str, auth_source: str, qu
 
 def normalize_budget_record(record: dict[str, Any], *, source_path: str) -> BudgetItem:
     name = _first_str(record, NAME_KEYS) or source_path
-    limit = _first_number(record, LIMIT_KEYS)
-    consumed = _first_number(record, CONSUMED_KEYS)
-    remaining = _first_number(record, REMAINING_KEYS)
+    limit = _first_number(record, ("max_limit", *LIMIT_KEYS))
+    consumed = _first_number(record, ("current_usage", *CONSUMED_KEYS))
+    remaining = None
     derived_remaining = False
     if remaining is None and limit is not None and consumed is not None:
         remaining = limit - consumed
@@ -47,6 +48,8 @@ def normalize_budget_record(record: dict[str, Any], *, source_path: str) -> Budg
     details = _strip_known_fields(record)
     return BudgetItem(
         name=name,
+        current_usage=consumed,
+        max_limit=limit,
         limit=limit,
         consumed=consumed,
         remaining=remaining,
@@ -71,6 +74,9 @@ def build_summary(items: Iterable[BudgetItem]) -> QuotaSummary:
         consumed_total=sum(consumed_values) if consumed_values else None,
         remaining_total=sum(remaining_values) if remaining_values else None,
         exhausted_budgets=exhausted,
+        current_usage=sum(consumed_values) if consumed_values else None,
+        max_limit=sum(limit_values) if limit_values else None,
+        remaining=(sum(limit_values) - sum(consumed_values)) if len(limit_values) == len(consumed_values) and limit_values else None,
     )
 
 
@@ -115,14 +121,14 @@ def _first_number(record: dict[str, Any], keys: tuple[str, ...]) -> float | int 
         value = record.get(key)
         if isinstance(value, bool):
             continue
-        if isinstance(value, (int, float)):
-            return value
-        if isinstance(value, str):
+        if isinstance(value, (int, float, Decimal, str)):
             try:
-                number = float(value) if "." in value else int(value)
-            except ValueError:
+                number = Decimal(str(value))
+                if not number.is_finite() or number < 0:
+                    continue
+                return float(number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+            except (InvalidOperation, ValueError):
                 continue
-            return number
     return None
 
 

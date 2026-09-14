@@ -23,7 +23,7 @@ Authentication is separated by purpose:
 - production callers send an Authorization header containing a PingIdentity token; it is sent only to `BIFROST_USERINFO_URL` when JWT identity fallback is needed, and the selected identity is sent as the URL-encoded governance `search` parameter
 - the governance request always uses `BIFROST_ADMIN_API_KEY`; the incoming user token is never used as the admin credential
 
-The tool never returns the raw virtual key. It only returns derived quota data.
+The tool never returns the raw virtual key. It only returns derived quota data. Monetary quota fields (`current_usage`, `max_limit`, and `remaining`) are expressed in dollars as JSON numbers rounded to two decimal places. `remaining` is always calculated as `max_limit - current_usage` using decimal arithmetic with `ROUND_HALF_UP`; missing, negative, null, or malformed monetary inputs produce an explicit error rather than an incorrect calculation.
 
 ## Configuration
 
@@ -75,11 +75,11 @@ uv run bifrost-budget
 
 The server emits structured JSON logs to standard output. Logs cover startup, auth-source selection, tool invocation, the governance-user request and response, matching, usage extraction, and errors. Use the event name (`event`) to group a single troubleshooting attempt; the URL, HTTP status, counts, and duration are operational context, not credentials.
 
-Every process emits one `service_version` event during startup with `version` (the installed `bifrost-budget` package version) and `build_id` (a validated Git SHA when `BIFROST_BUILD_SHA`, `GIT_SHA`, or `SOURCE_COMMIT` is provided, otherwise `unknown`). Use this event to correlate runtime logs with an image tag: for a release, `version` should match the image and Helm tag (currently `0.3.6`), while `build_id` can be matched to the immutable commit-tagged image and deployment revision. Both fields are explicitly `unknown` when unavailable; no configuration values are included.
+Every process emits one `service_version` event during startup with `version` (the installed `bifrost-budget` package version) and `build_id` (a validated Git SHA when `BIFROST_BUILD_SHA`, `GIT_SHA`, or `SOURCE_COMMIT` is provided, otherwise `unknown`). Use this event to correlate runtime logs with an image tag: for a release, `version` should match the image and Helm tag (currently `0.3.7`), while `build_id` can be matched to the immutable commit-tagged image and deployment revision. Both fields are explicitly `unknown` when unavailable; no configuration values are included.
 
 For a short-lived local diagnostic run only, set `BIFROST_LOG_RAW_HEADERS=true`. Each inbound Streamable HTTP tool request then emits an `inbound_request_headers_cleartext` event containing every header value exactly as received. This is disabled by default and must not be enabled in shared, staging, or production environments because it can log bearer tokens, cookies, and API keys.
 
-### Safe maximal diagnostics (0.3.6)
+### Safe maximal diagnostics (0.3.7)
 
 The `inbound_request_diagnostics` event records every inbound header as `name`, `present`, `value_type`, `value_length`, `value_fingerprint`, and `sensitive`; it never records a header value. Credential-like names are classified sensitive regardless of spelling. Authorization adds `header_present`, `scheme`, `token_length`, `token_fingerprint`, `token_segment_count`, `token_segment_lengths`, `decode_success`, `decode_failure_reason`, `claim_keys`, `claim_metadata`, and `duplicate_claim_keys`. Each `claim_metadata` entry contains only `key`, `value_type`, `value_length`, and `value_fingerprint`.
 
@@ -113,7 +113,7 @@ Use these fields to determine whether the PingIdentity-derived identity reached 
 
 ### Success and no-match behavior
 
-For a successful lookup, expect HTTP 2xx from the governance endpoint, a `user_lookup_match` event with `match_count` greater than zero, and a `usage_extraction` event with the extracted `budget_count`. The tool returns normalized budget rows and a summary with derived totals and remaining values.
+For a successful lookup, expect HTTP 2xx from the governance endpoint, a `user_lookup_match` event with `match_count` greater than zero, and a `usage_extraction` event with the extracted `budget_count`. The tool returns normalized budget rows and a summary with derived totals and remaining values. In the governance response, `current_usage` is read exactly from `users[*].access_profiles[*].budgets[*].current_usage`; `max_limit` is read from the same upstream budget object's `max_limit` field (with legacy `limit` fallback). Both are dollar amounts rounded to two decimal places, and `remaining` is derived from those two fields.
 
 If `match_count` is zero, the tool raises `No Bifrost governance user matched the authenticated PingIdentity user` and returns no usage report. This is an expected, actionable no-match outcome—not evidence that the caller's identity should be added to logs. HTTP errors and invalid JSON from the governance endpoint fail the tool with status/type context; they do not expose credential values.
 
@@ -151,7 +151,7 @@ Install:
 helm upgrade --install bifrost-budget charts/bifrost-budget \
   --namespace bifrost-budget \
   --create-namespace \
-  --set image.tag=0.3.6 \
+  --set image.tag=0.3.7 \
   --set ingress.enabled=true \
   --set ingress.className=traefik \
   --set ingress.hosts[0].host=bifrost-budget.example.internal \
@@ -256,7 +256,7 @@ Legacy/non-production fallback credentials can be supplied in one of three ways:
 
 The fallback paths are intended for local/dev or explicit non-production use.
 
-The response includes normalized budget rows and a summary with derived totals and remaining values.
+The response includes normalized budget rows and a summary with derived totals and remaining values. Each budget row includes dollar-valued `current_usage`, `max_limit`, and `remaining` fields; values are rounded to two decimals with decimal `ROUND_HALF_UP` arithmetic.
 
 If no governance user matches the PingIdentity-derived identity, the tool returns a clear no-match error and no usage report. HTTP errors from the governance users endpoint and invalid JSON likewise fail the tool; budgets without `current_usage` are omitted from the report and reflected in diagnostic counts.
 

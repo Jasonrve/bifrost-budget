@@ -218,10 +218,16 @@ class BifrostClient:
                 if not isinstance(budget, dict) or "current_usage" not in budget:
                     malformed += 1
                     continue
+                current_usage = _parse_money(budget.get("current_usage"))
+                max_limit = _parse_money(budget.get("max_limit", budget.get("limit")))
+                if current_usage is None or max_limit is None:
+                    raise ToolError("Bifrost governance budget has missing or malformed monetary quota fields")
+                if current_usage > max_limit:
+                    raise ToolError("Bifrost governance budget current_usage exceeds max_limit")
                 budgets.append({
                     "name": budget.get("name", "usage"),
-                    "consumed": budget.get("current_usage"),
-                    "limit": budget.get("limit"),
+                    "current_usage": current_usage,
+                    "max_limit": max_limit,
                     "unit": budget.get("unit"),
                 })
         log_event(logging.INFO, "usage_extraction", budget_count=len(budgets), malformed_budget_count=malformed)
@@ -343,3 +349,17 @@ def _build_governance_users_url(base_url: str, user_identifier: str) -> str:
 
 def _user_matches(user: dict[str, Any], identifier: str) -> bool:
     return bool(_matching_fields(user, identifier))
+
+
+def _parse_money(value: Any) -> float | None:
+    """Parse a non-negative monetary amount without binary float arithmetic."""
+    from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        amount = Decimal(str(value))
+        if not amount.is_finite() or amount < 0:
+            return None
+        return float(amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    except (InvalidOperation, ValueError, TypeError):
+        return None

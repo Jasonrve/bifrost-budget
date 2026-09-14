@@ -56,7 +56,7 @@ def test_main_emits_service_version_without_sensitive_configuration(
     assert '"build_id":"abc123deadbeef"' in log_text
     assert "admin-secret" not in log_text
     assert "Authorization" not in log_text
-    assert __version__ == "0.3.6"
+    assert __version__ == "0.3.7"
 
 
 def test_raw_header_logging_is_explicitly_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -138,7 +138,26 @@ async def test_normalize_quota_payload_derives_remaining_values() -> None:
     assert report.budgets[0].remaining == 750
     assert report.budgets[0].derived_remaining is True
     assert report.budgets[1].remaining == 375
-    assert report.budgets[1].derived_remaining is False
+    assert report.budgets[1].derived_remaining is True
+    assert report.budgets[0].current_usage == 250.0
+    assert report.budgets[0].max_limit == 1000.0
+    assert report.summary.current_usage == 375.0
+    assert report.summary.max_limit == 1500.0
+    assert report.summary.remaining == 1125.0
+
+
+def test_normalize_monetary_values_uses_decimal_round_half_up() -> None:
+    report = normalize_quota_payload(
+        {"budgets": [{"name": "credits", "current_usage": "1.005", "max_limit": "2.015"}]},
+        endpoint="https://bifrost.example.com",
+        auth_source="admin_api_key",
+        queried_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
+    )
+    item = report.budgets[0]
+    assert item.current_usage == 1.01
+    assert item.max_limit == 2.02
+    assert item.remaining == 1.01
+    assert report.summary.remaining == 1.01
 
 
 @pytest.mark.asyncio
@@ -647,6 +666,9 @@ async def test_user_usage_uses_admin_key_and_ping_identity_separately() -> None:
     assert seen["url"] == "https://bifrost.example.com/api/governance/users?limit=20&search=alice%40example.com"
     assert seen["authorization"] == "Bearer admin-secret"
     assert report["budgets"][0]["consumed"] == 27
+    assert report["budgets"][0]["current_usage"] == 27.0
+    assert report["budgets"][0]["max_limit"] == 100.0
+    assert report["budgets"][0]["remaining"] == 73.0
     assert report["summary"]["remaining_total"] == 73
 
 
