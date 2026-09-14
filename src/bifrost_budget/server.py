@@ -16,8 +16,7 @@ from .logging import (
     build_credential_trace,
     header_diagnostics,
     log_event,
-    raw_header_diagnostics,
-    raw_header_logging_enabled,
+
     extract_displayname_from_authorization,
     fingerprint_value,
 )
@@ -38,7 +37,7 @@ def create_server() -> MCPServer[object]:
         title=SERVER_TITLE,
         description=SERVER_DESCRIPTION,
         instructions=SERVER_INSTRUCTIONS,
-        version="0.3.7",
+        version="0.3.8",
     )
 
     @server.custom_route("/healthz", ["GET"], include_in_schema=False)
@@ -124,7 +123,7 @@ def create_server() -> MCPServer[object]:
                     )
         except ToolError as exc:
             log_event(logging.ERROR, "tool_error", tool="get_quota", auth_source=auth_source,
-                      reason_code=type(exc).__name__, error_reason=str(exc), **correlation)
+                      reason_code=type(exc).__name__, **correlation)
             raise
 
     return server
@@ -175,13 +174,7 @@ def _resolve_credential(
             ).get("token_fingerprint") if request_id else None,
             headers=header_diagnostics(headers),
         )
-        if raw_header_logging_enabled():
-            log_event(
-                logging.WARNING,
-                "inbound_request_headers_cleartext",
-                transport="streamable-http",
-                headers=raw_header_diagnostics(headers),
-            )
+
         authorization = headers.get("authorization") or headers.get("Authorization")
         if authorization and authorization.strip():
             authorization_trace = build_credential_trace(

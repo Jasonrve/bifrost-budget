@@ -1,4 +1,4 @@
-FROM python:3.11-slim AS builder
+FROM python:3.11-slim-bookworm AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -13,9 +13,9 @@ COPY src ./src
 
 RUN uv pip install --system --no-cache-dir .
 
-FROM python:3.11-slim AS runtime
+FROM python:3.11-slim-bookworm AS runtime
 
-ARG VERSION=0.3.7
+ARG VERSION=0.3.8
 ARG BUILD_SHA=unknown
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -29,10 +29,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 LABEL org.opencontainers.image.version=${VERSION} \
       org.opencontainers.image.revision=${BUILD_SHA}
 
+RUN groupadd --system --gid 10001 bifrost \
+    && useradd --system --uid 10001 --gid 10001 --home-dir /app --no-create-home bifrost \
+    && mkdir -p /app /tmp \
+    && chown -R 10001:10001 /app /tmp
+
 WORKDIR /app
 
 COPY --from=builder /usr/local /usr/local
 COPY --from=builder /app /app
+
+USER 10001:10001
 
 EXPOSE 8080
 

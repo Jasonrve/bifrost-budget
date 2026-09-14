@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+from urllib.parse import urlsplit, urlunsplit
 from importlib.metadata import PackageNotFoundError, version as package_version
 from typing import Any, Literal
 
@@ -100,18 +101,6 @@ def header_diagnostics(headers: Any) -> list[dict[str, Any]]:
             "sensitive": any(word in name for word in _SENSITIVE_HEADER_WORDS),
         })
     return sorted(result, key=lambda item: item["name"])
-
-
-def raw_header_diagnostics(headers: Any) -> dict[str, str]:
-    """Return inbound headers verbatim for explicitly enabled local diagnostics."""
-    if not headers:
-        return {}
-    return {str(name): value if isinstance(value, str) else str(value) for name, value in headers.items()}
-
-
-def raw_header_logging_enabled() -> bool:
-    """Enable clear-text header logging only for an explicit diagnostic run."""
-    return os.getenv("BIFROST_LOG_RAW_HEADERS", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def authorization_diagnostics(authorization: str | None) -> dict[str, Any]:
@@ -312,5 +301,18 @@ def extract_identity_from_authorization(authorization: str | None) -> str | None
 
 
 def log_event(level: int, event: str, **fields: Any) -> None:
-    payload = {"event": event, **fields}
+    payload = {"event": event, **{key: _sanitize_log_value(value) for key, value in fields.items()}}
     get_logger().log(level, json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")))
+
+
+def _sanitize_log_value(value: Any) -> Any:
+    """Remove query/fragment values from URLs even when a caller passes a URL directly."""
+    if isinstance(value, str) and "://" in value:
+        parts = urlsplit(value)
+        if parts.scheme and parts.netloc:
+            return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+    if isinstance(value, dict):
+        return {str(key): _sanitize_log_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_log_value(item) for item in value]
+    return value
