@@ -10,10 +10,9 @@ from importlib.metadata import PackageNotFoundError, version as package_version
 import httpx
 import httpx2
 import pytest
-from mcp import ClientSession
-from mcp.client.streamable_http import streamable_http_client
-from mcp.server.transport_security import TransportSecuritySettings
-from mcp.server.mcpserver.exceptions import ToolError
+from fastmcp import Client
+from fastmcp.client.transports import StreamableHttpTransport
+from fastmcp.exceptions import ToolError
 
 from bifrost_budget.client import BifrostClient
 from bifrost_budget.logging import (
@@ -39,6 +38,31 @@ def _make_jwt(payload: dict[str, object]) -> str:
     return f"{header.decode('utf-8')}.{body.decode('utf-8')}.signature"
 
 
+def _asgi_client_factory(app):
+    def factory(*, headers=None, auth=None, follow_redirects=True, timeout=None, **_kwargs):
+        return httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=app),
+            base_url="http://test",
+            headers=headers,
+            follow_redirects=follow_redirects,
+        )
+
+    return factory
+
+
+async def _call_tool_over_http(
+    server, tool_name: str, arguments: dict[str, object], headers: dict[str, str], raise_on_error: bool = True
+):
+    """Exercise a tool through the real streamable-HTTP/MCP protocol stack, in-process."""
+    app = server.http_app(path="/mcp", stateless_http=True)
+    async with app.router.lifespan_context(app):
+        transport = StreamableHttpTransport(
+            "http://test/mcp", headers=headers, httpx_client_factory=_asgi_client_factory(app)
+        )
+        async with Client(transport) as client:
+            return await client.call_tool(tool_name, arguments, raise_on_error=raise_on_error)
+
+
 def test_main_emits_service_version_without_sensitive_configuration(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -56,8 +80,7 @@ def test_main_emits_service_version_without_sensitive_configuration(
     assert '"build_id":"abc123deadbeef"' in log_text
     assert "admin-secret" not in log_text
     assert "Authorization" not in log_text
-    assert __version__ == "0.3.9"
-
+    assert __version__ == "0.4.0"
 
 
 def test_service_version_uses_unknown_for_missing_metadata_and_invalid_build_id(
@@ -252,7 +275,7 @@ async def test_userinfo_uses_inbound_token_and_prefers_name_without_logging_pii(
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
         return httpx.Response(200, json={"name": " Alice Example ", "preferred_username": "fallback", "sub": "subject-secret", "roles": ["user"]})
-    caplog.set_level(logging.INFO, logger="bifrost_budget")
+    caplog.set_level(logging.DEBUG, logger="bifrost_budget")
     settings = BifrostSettings(api_base_url="https://bifrost.example.com", userinfo_url="https://sso.example/userinfo")
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         username = await BifrostClient(settings, client=client).fetch_userinfo_identity(authorization=token)
@@ -271,7 +294,7 @@ async def test_userinfo_prefers_preferred_username_when_name_is_unusable() -> No
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
         return httpx.Response(200, json={"name": "   ", "preferred_username": " preferred-user ", "email": "ignored@example.com"})
-    settings = BifrostSettings(api_base_url="https://bifrost.example.com")
+    settings = BifrostSettings(api_base_url="https://bifrost.example.com", userinfo_url="https://sso.example/userinfo")
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         identity = await BifrostClient(settings, client=client).fetch_userinfo_identity(authorization="Bearer inbound-token")
     assert identity == "preferred-user"
@@ -286,7 +309,7 @@ async def test_userinfo_prefers_preferred_username_when_name_is_unusable() -> No
 @pytest.mark.asyncio
 async def test_userinfo_rejects_invalid_username(payload: dict[str, object], reason: str, caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO, logger="bifrost_budget")
-    settings = BifrostSettings(api_base_url="https://bifrost.example.com")
+    settings = BifrostSettings(api_base_url="https://bifrost.example.com", userinfo_url="https://sso.example/userinfo")
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload))) as client:
         with pytest.raises(ToolError, match="UserInfo"):
             await BifrostClient(settings, client=client).fetch_userinfo_identity(authorization="Bearer token")
@@ -294,8 +317,16 @@ async def test_userinfo_rejects_invalid_username(payload: dict[str, object], rea
 
 
 @pytest.mark.asyncio
-async def test_userinfo_http_and_decode_errors_are_explicit() -> None:
+async def test_userinfo_requires_configured_url() -> None:
     settings = BifrostSettings(api_base_url="https://bifrost.example.com")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, json={}))) as client:
+        with pytest.raises(ToolError, match="BIFROST_USERINFO_URL"):
+            await BifrostClient(settings, client=client).fetch_userinfo_identity(authorization="Bearer token")
+
+
+@pytest.mark.asyncio
+async def test_userinfo_http_and_decode_errors_are_explicit() -> None:
+    settings = BifrostSettings(api_base_url="https://bifrost.example.com", userinfo_url="https://sso.example/userinfo")
     for response in (httpx.Response(401), httpx.Response(200, text="not-json")):
         async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _, response=response: response)) as client:
             with pytest.raises(ToolError, match="UserInfo"):
@@ -304,7 +335,7 @@ async def test_userinfo_http_and_decode_errors_are_explicit() -> None:
 
 @pytest.mark.asyncio
 async def test_client_emits_structured_logs_for_request_and_success(caplog: pytest.LogCaptureFixture) -> None:
-    configure_logging("INFO")
+    configure_logging("DEBUG")
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"budgets": [{"name": "caller", "limit": 20, "used": 5}]})
@@ -312,7 +343,7 @@ async def test_client_emits_structured_logs_for_request_and_success(caplog: pyte
     transport = httpx.MockTransport(handler)
     client = httpx.AsyncClient(transport=transport, base_url="https://bifrost.example.com")
     settings = BifrostSettings(api_base_url="https://bifrost.example.com")
-    caplog.set_level(logging.INFO, logger="bifrost_budget")
+    caplog.set_level(logging.DEBUG, logger="bifrost_budget")
     token = _make_jwt({"iss": "https://issuer.example.com", "sub": "user-123", "tenant": "tenant-42"})
     credential = f"Bearer {token}"
     try:
@@ -386,14 +417,16 @@ async def test_client_logs_safe_401_details_before_raising(caplog: pytest.LogCap
 @pytest.mark.asyncio
 async def test_server_exposes_health_route_and_tool_metadata() -> None:
     server = create_server()
-    tool_names = {tool.name for tool in await server.list_tools()}
+    async with Client(server) as client:
+        tools = await client.list_tools()
+    tool_names = {tool.name for tool in tools}
     assert "get_quota" in tool_names
 
-    tool = next(tool for tool in await server.list_tools() if tool.name == "get_quota")
+    tool = next(tool for tool in tools if tool.name == "get_quota")
     assert "Authorization header" in (tool.description or "")
     assert "BIFROST_AUTH_EXCHANGE_MAP" not in (tool.description or "")
 
-    app = server.streamable_http_app(streamable_http_path="/mcp", stateless_http=True)
+    app = server.http_app(path="/mcp", stateless_http=True)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/healthz")
 
@@ -427,11 +460,19 @@ async def test_streamable_http_tool_path_selects_name_claim(monkeypatch: pytest.
         async def __aexit__(self, *args: object) -> None:
             return None
 
-        async def fetch_userinfo_identity(self, *, authorization: str) -> str:
+        async def fetch_userinfo_identity(self, *, authorization: str, correlation: dict[str, object] | None = None) -> str:
             seen["userinfo_authorization"] = authorization
             return "userinfo-user"
 
-        async def fetch_user_usage(self, *, admin_api_key: str, user_identifier: str) -> dict[str, object]:
+        async def fetch_user_usage(
+            self,
+            *,
+            admin_api_key: str,
+            user_identifier: str,
+            correlation: dict[str, object] | None = None,
+            inbound_authorization: str | None = None,
+            identity_source: str | None = None,
+        ) -> dict[str, object]:
             seen.update(admin_api_key=admin_api_key, user_identifier=user_identifier)
             return {"budgets": [], "summary": {"budget_count": 0}}
 
@@ -439,35 +480,21 @@ async def test_streamable_http_tool_path_selects_name_claim(monkeypatch: pytest.
     monkeypatch.setattr(server_module, "BifrostClient", FakeClient)
     monkeypatch.setenv("BIFROST_API_BASE_URL", "https://bifrost.example.com")
     monkeypatch.setenv("BIFROST_ADMIN_API_KEY", "admin-secret")
-    app = create_server().streamable_http_app(
-        streamable_http_path="/mcp",
-        stateless_http=True,
-        json_response=True,
-        transport_security=TransportSecuritySettings(allowed_hosts=["test"]),
+
+    result = await _call_tool_over_http(
+        create_server(), "get_quota", {}, headers={"authorization": f"Bearer {token}"}
     )
-    async with app.router.lifespan_context(app):
-        async with httpx2.AsyncClient(
-            transport=httpx2.ASGITransport(app=app),
-            base_url="http://test",
-            headers={"authorization": f"Bearer {token}"},
-        ) as http_client:
-            async with streamable_http_client(
-                "http://test/mcp", http_client=http_client, terminate_on_close=False
-            ) as (read_stream, write_stream):
-                async with ClientSession(read_stream, write_stream) as session:
-                    await session.initialize()
-                    result = await session.call_tool("get_quota", {})
 
     assert result.is_error is False
     assert seen == {"admin_api_key": "admin-secret", "user_identifier": name}
 
+
 @pytest.mark.asyncio
 async def test_virtual_key_resolution_prefers_explicit_argument() -> None:
-    class DummyContext:
-        headers = {"x-bf-vk": "header-secret", "authorization": "Bearer auth-secret"}
+    headers = {"x-bf-vk": "header-secret", "authorization": "Bearer auth-secret"}
 
     settings = BifrostSettings(api_base_url="https://bifrost.example.com")
-    resolved, source, mode, trace = _resolve_credential("explicit-secret", DummyContext(), settings)
+    resolved, source, mode, trace = _resolve_credential("explicit-secret", headers, settings)
     assert resolved == "explicit-secret"
     assert source == "tool_argument"
     assert mode == "virtual_key"
@@ -478,17 +505,16 @@ async def test_virtual_key_resolution_prefers_explicit_argument() -> None:
 async def test_resolve_credential_uses_authorization_header_directly(caplog: pytest.LogCaptureFixture) -> None:
     configure_logging("DEBUG")
 
-    class DummyContext:
-        headers = {
-            "authorization": f"Bearer {_make_jwt({'iss': 'https://issuer.example.com', 'sub': 'user-123', 'tenant': 'tenant-42'})}",
-            "x-bf-vk": "header-secret",
-        }
+    headers = {
+        "authorization": f"Bearer {_make_jwt({'iss': 'https://issuer.example.com', 'sub': 'user-123', 'tenant': 'tenant-42'})}",
+        "x-bf-vk": "header-secret",
+    }
 
     caplog.set_level(logging.DEBUG, logger="bifrost_budget")
     settings = BifrostSettings(api_base_url="https://bifrost.example.com")
-    resolved, source, mode, trace = _resolve_credential(None, DummyContext(), settings)
+    resolved, source, mode, trace = _resolve_credential(None, headers, settings)
 
-    assert resolved == DummyContext.headers["authorization"]
+    assert resolved == headers["authorization"]
     assert source == "request_header:authorization"
     assert mode == "authorization"
     assert trace["claim_keys"] == ["iss", "sub", "tenant"]
@@ -518,11 +544,10 @@ async def test_resolve_credential_prefers_displayname_claim_from_supplied_pingid
         "client_id": "client-123",
     })
 
-    class DummyContext:
-        headers = {"authorization": f"Bearer {token}"}
+    headers = {"authorization": f"Bearer {token}"}
 
     settings = BifrostSettings(api_base_url="https://bifrost.example.com")
-    resolved, source, mode, trace = _resolve_credential(None, DummyContext(), settings)
+    resolved, source, mode, trace = _resolve_credential(None, headers, settings)
 
     assert resolved == f"Bearer {token}"
     assert source == "request_header:authorization"
@@ -562,11 +587,10 @@ def test_resolve_credential_rejects_missing_or_invalid_displayname(displayname: 
         payload["displayname"] = displayname
     token = _make_jwt(payload)
 
-    class DummyContext:
-        headers = {"authorization": f"Bearer {token}"}
+    headers = {"authorization": f"Bearer {token}"}
 
     settings = BifrostSettings(api_base_url="https://bifrost.example.com")
-    _, _, _, trace = _resolve_credential(None, DummyContext(), settings)
+    _, _, _, trace = _resolve_credential(None, headers, settings)
     assert trace["identity"] == ""
     assert trace["identity_selection_reason"] == reason
 
@@ -595,24 +619,78 @@ async def test_server_uses_userinfo_fallback_before_governance(monkeypatch: pyte
     monkeypatch.setattr(server_module, "BifrostClient", FakeClient)
     monkeypatch.setenv("BIFROST_API_BASE_URL", "https://bifrost.example.com")
     monkeypatch.setenv("BIFROST_ADMIN_API_KEY", "admin-secret")
-    app = create_server().streamable_http_app(streamable_http_path="/mcp", stateless_http=True, json_response=True, transport_security=TransportSecuritySettings(allowed_hosts=["test"]))
-    async with app.router.lifespan_context(app):
-        async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://test", headers={"authorization": f"Bearer {token}"}) as http_client:
-            async with streamable_http_client("http://test/mcp", http_client=http_client, terminate_on_close=False) as (read_stream, write_stream):
-                async with ClientSession(read_stream, write_stream) as session:
-                    await session.initialize()
-                    result = await session.call_tool("get_quota", {})
+
+    result = await _call_tool_over_http(
+        create_server(), "get_quota", {}, headers={"authorization": f"Bearer {token}"}
+    )
     assert result.is_error is False
     assert seen == ["userinfo", "governance"]
 
 
 @pytest.mark.asyncio
+async def test_default_log_level_emits_one_line_per_successful_call(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    configure_logging("INFO")
+    caplog.set_level(logging.INFO, logger="bifrost_budget")
+    token = _make_jwt({"displayname": "Ping User"})
+
+    class FakeClient:
+        def __init__(self, settings: BifrostSettings) -> None:
+            pass
+        async def __aenter__(self) -> "FakeClient":
+            return self
+        async def __aexit__(self, *args: object) -> None:
+            return None
+        async def fetch_user_usage(self, **kwargs: object) -> dict[str, object]:
+            return {"budgets": [], "summary": {"budget_count": 3}}
+
+    server_module = importlib.import_module("bifrost_budget.server")
+    monkeypatch.setattr(server_module, "BifrostClient", FakeClient)
+    monkeypatch.setenv("BIFROST_API_BASE_URL", "https://bifrost.example.com")
+    monkeypatch.setenv("BIFROST_ADMIN_API_KEY", "admin-secret")
+
+    result = await _call_tool_over_http(
+        create_server(), "get_quota", {}, headers={"authorization": f"Bearer {token}"}
+    )
+
+    assert result.is_error is False
+    own_records = [record for record in caplog.records if record.name == "bifrost_budget"]
+    events = [json.loads(record.getMessage())["event"] for record in own_records]
+    assert events == ["get_quota_completed"]
+    log_text = "\n".join(record.getMessage() for record in own_records)
+    assert '"budget_count":3' in log_text
+    assert '"duration_ms"' in log_text
+
+
+@pytest.mark.asyncio
+async def test_default_log_level_emits_one_line_on_failure(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    configure_logging("INFO")
+    caplog.set_level(logging.INFO, logger="bifrost_budget")
+    monkeypatch.setenv("BIFROST_API_BASE_URL", "https://bifrost.example.com")
+    monkeypatch.setenv("BIFROST_ADMIN_API_KEY", "admin-secret")
+
+    # x-bf-vk only (no Authorization header) resolves to virtual_key mode, which
+    # get_quota rejects with a ToolError since it requires Authorization passthrough.
+    result = await _call_tool_over_http(
+        create_server(), "get_quota", {}, headers={"x-bf-vk": "vk-1"}, raise_on_error=False
+    )
+
+    assert result.is_error is True
+    events = [
+        json.loads(record.getMessage())["event"] for record in caplog.records if record.name == "bifrost_budget"
+    ]
+    assert events == ["tool_error"]
+
+
+@pytest.mark.asyncio
 async def test_resolve_credential_falls_back_to_virtual_key_header() -> None:
-    class DummyContext:
-        headers = {"x-bf-vk": "header-secret"}
+    headers = {"x-bf-vk": "header-secret"}
 
     settings = BifrostSettings(api_base_url="https://bifrost.example.com")
-    resolved, source, mode, trace = _resolve_credential(None, DummyContext(), settings)
+    resolved, source, mode, trace = _resolve_credential(None, headers, settings)
 
     assert resolved == "header-secret"
     assert source == "request_header:x-bf-vk"
@@ -622,14 +700,11 @@ async def test_resolve_credential_falls_back_to_virtual_key_header() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_credential_uses_default_virtual_key_fallback_when_no_headers_exist(caplog: pytest.LogCaptureFixture) -> None:
-    configure_logging("INFO")
-
-    class DummyContext:
-        headers = {}
+    configure_logging("DEBUG")
 
     settings = BifrostSettings(api_base_url="https://bifrost.example.com", default_virtual_key="vk-default")
-    caplog.set_level(logging.INFO, logger="bifrost_budget")
-    resolved, source, mode, trace = _resolve_credential(None, DummyContext(), settings)
+    caplog.set_level(logging.DEBUG, logger="bifrost_budget")
+    resolved, source, mode, trace = _resolve_credential(None, {}, settings)
 
     assert resolved == "vk-default"
     assert source == "environment:BIFROST_VIRTUAL_KEY"
@@ -695,8 +770,8 @@ async def test_user_usage_searches_beyond_default_first_page_and_encodes_identit
 
 @pytest.mark.asyncio
 async def test_user_usage_diagnostics_expose_query_shape_without_search_value(caplog: pytest.LogCaptureFixture) -> None:
-    configure_logging("INFO")
-    caplog.set_level(logging.INFO, logger="bifrost_budget")
+    configure_logging("DEBUG")
+    caplog.set_level(logging.DEBUG, logger="bifrost_budget")
 
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(
@@ -738,8 +813,8 @@ async def test_user_usage_returns_empty_for_malformed_budget_entries() -> None:
 async def test_user_usage_raises_tool_error_when_pingidentity_user_has_no_match(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    configure_logging("INFO")
-    caplog.set_level(logging.INFO, logger="bifrost_budget")
+    configure_logging("DEBUG")
+    caplog.set_level(logging.DEBUG, logger="bifrost_budget")
     seen: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -776,8 +851,8 @@ async def test_user_usage_raises_tool_error_when_pingidentity_user_has_no_match(
 
 @pytest.mark.asyncio
 async def test_user_usage_logs_masked_candidate_match_metadata(caplog: pytest.LogCaptureFixture) -> None:
-    configure_logging("INFO")
-    caplog.set_level(logging.INFO, logger="bifrost_budget")
+    configure_logging("DEBUG")
+    caplog.set_level(logging.DEBUG, logger="bifrost_budget")
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"users": [{"email": "alice@example.com"}]})
@@ -801,8 +876,8 @@ async def test_user_usage_logs_masked_candidate_match_metadata(caplog: pytest.Lo
 async def test_successful_user_lookup_logs_only_masked_identity_diagnostics(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    configure_logging("INFO")
-    caplog.set_level(logging.INFO, logger="bifrost_budget")
+    configure_logging("DEBUG")
+    caplog.set_level(logging.DEBUG, logger="bifrost_budget")
     email = "alice.sensitive@example.com"
     name = "Alice Sensitive"
     subject = "ping-subject-sensitive"
@@ -860,8 +935,8 @@ async def test_successful_user_lookup_logs_only_masked_identity_diagnostics(
 async def test_user_usage_logs_explicit_candidate_field_reasons_without_values(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    configure_logging("INFO")
-    caplog.set_level(logging.INFO, logger="bifrost_budget")
+    configure_logging("DEBUG")
+    caplog.set_level(logging.DEBUG, logger="bifrost_budget")
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"users": [

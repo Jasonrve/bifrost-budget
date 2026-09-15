@@ -22,14 +22,16 @@ def main() -> None:
         quota_url=settings.quota_url,
     )
     if settings.transport == "stdio":
-        asyncio.run(server.run_stdio_async())
+        asyncio.run(server.run_stdio_async(show_banner=False))
         return
 
     asyncio.run(
-        server.run_streamable_http_async(
+        server.run_http_async(
+            show_banner=False,
+            transport="streamable-http",
             host=settings.host,
             port=settings.port,
-            streamable_http_path=settings.mcp_path,
+            path=settings.mcp_path,
             stateless_http=True,
         )
     )

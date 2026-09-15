@@ -44,8 +44,10 @@ spec:
               value: {{ .Values.env.timeoutSeconds | quote }}
             - name: BIFROST_API_BASE_URL
               value: {{ required "env.apiBaseUrl is required" .Values.env.apiBaseUrl | quote }}
+            {{- if .Values.env.userinfoUrl }}
             - name: BIFROST_USERINFO_URL
-              value: {{ required "env.userinfoUrl is required" .Values.env.userinfoUrl | quote }}
+              value: {{ .Values.env.userinfoUrl | quote }}
+            {{- end }}
             {{- if .Values.env.virtualKey.value }}
             - name: BIFROST_VIRTUAL_KEY
               value: {{ .Values.env.virtualKey.value | quote }}

@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import uuid
 from typing import Any, Literal
 
-from fastapi.responses import JSONResponse, Response
-from mcp.server.mcpserver import MCPServer
-from mcp.server.mcpserver.context import Context
-from mcp.server.mcpserver.exceptions import ToolError
+from fastmcp import Context, FastMCP
+from fastmcp.exceptions import ToolError
+from fastmcp.server.dependencies import get_http_headers, get_http_request
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
 
 from .client import BifrostClient
 from .logging import (
@@ -16,32 +18,27 @@ from .logging import (
     build_credential_trace,
     header_diagnostics,
     log_event,
-
     extract_displayname_from_authorization,
     fingerprint_value,
 )
 from .settings import BifrostSettings
 
 SERVER_NAME = "bifrost-budget"
-SERVER_TITLE = "Bifrost Budget"
-SERVER_DESCRIPTION = "Read-only MCP server for caller Bifrost budget and quota snapshots."
 SERVER_INSTRUCTIONS = (
     "Use the get_quota tool to inspect the caller's own quota information. "
     "This server is strictly read-only and never mutates Bifrost state."
 )
 
 
-def create_server() -> MCPServer[object]:
-    server = MCPServer(
+def create_server() -> FastMCP:
+    server = FastMCP(
         name=SERVER_NAME,
-        title=SERVER_TITLE,
-        description=SERVER_DESCRIPTION,
         instructions=SERVER_INSTRUCTIONS,
-        version="0.3.9",
+        version="0.4.0",
     )
 
     @server.custom_route("/healthz", ["GET"], include_in_schema=False)
-    async def healthz(_: Any) -> Response:
+    async def healthz(_: Request) -> Response:
         return JSONResponse({"status": "ok", "service": SERVER_NAME})
 
     @server.tool(
@@ -52,23 +49,27 @@ def create_server() -> MCPServer[object]:
             "with the caller's Authorization header when present. Explicit virtual_key, x-bf-vk, "
             "and BIFROST_VIRTUAL_KEY remain available for local and non-production fallback use."
         ),
-        structured_output=True,
     )
     async def get_quota(
+        ctx: Context,
         virtual_key: str | None = None,
         api_base_url: str | None = None,
-        ctx: Context[object] | None = None,
     ) -> dict[str, Any]:
+        started_at = time.perf_counter()
         settings = BifrostSettings.from_env(api_base_url=api_base_url)
-        request_id = getattr(ctx, "request_id", None) if ctx is not None else None
-        correlation = {"correlation_id_fingerprint": fingerprint_value(str(request_id or uuid.uuid4()))}
-        credential, auth_source, credential_mode, caller_identity = _resolve_credential(virtual_key, ctx, settings, correlation=correlation)
+        correlation = {"correlation_id_fingerprint": fingerprint_value(str(ctx.request_id or uuid.uuid4()))}
+        headers = get_http_headers(include_all=True)
+        credential, auth_source, credential_mode, caller_identity = _resolve_credential(
+            virtual_key, headers, settings, correlation=correlation
+        )
+        auth_decision = _auth_decision_label(auth_source, credential_mode)
+        # Full identity/credential trace: verbose by design, so it only surfaces at DEBUG.
         log_event(
-            logging.INFO,
+            logging.DEBUG,
             "tool_invocation",
             tool="get_quota",
             auth_source=auth_source,
-            auth_decision=_auth_decision_label(auth_source, credential_mode),
+            auth_decision=auth_decision,
             caller_identity={key: value for key, value in caller_identity.items() if key != "identity"},
             credential_identity=build_credential_trace(
                 credential,
@@ -81,7 +82,7 @@ def create_server() -> MCPServer[object]:
             inbound_credential="pingidentity_authorization" if credential_mode == "authorization" else "fallback_virtual_key",
             outbound_credential="bifrost_admin_api_key",
             search_identity_fingerprint=caller_identity.get("identity_fingerprint"),
-            search_identity_length=len(caller_identity["identity"]),
+            search_identity_length=len(caller_identity.get("identity") or ""),
             selected_identity_claim=caller_identity.get("selected_identity_claim"),
             selected_identity_source=caller_identity.get("selected_identity_source"),
             identity_extraction_source=caller_identity.get("identity_extraction_source"),
@@ -98,32 +99,40 @@ def create_server() -> MCPServer[object]:
                     raise ToolError("BIFROST_ADMIN_API_KEY must be configured")
                 identity = caller_identity.get("identity")
                 if not identity:
-                    try:
-                        identity = await client.fetch_userinfo_identity(authorization=credential, correlation=correlation)
-                    except TypeError as exc:
-                        if "correlation" not in str(exc):
-                            raise
-                        identity = await client.fetch_userinfo_identity(authorization=credential)
+                    identity = await client.fetch_userinfo_identity(authorization=credential, correlation=correlation)
                     identity_source = "userinfo.name_or_preferred_username"
                 else:
                     identity_source = "jwt.displayname"
-                try:
-                    return await client.fetch_user_usage(
-                        admin_api_key=settings.admin_api_key,
-                        user_identifier=identity,
-                        correlation=correlation,
-                        inbound_authorization=credential,
-                        identity_source=identity_source,
-                    )
-                except TypeError as exc:
-                    if "correlation" not in str(exc):
-                        raise
-                    return await client.fetch_user_usage(
-                        admin_api_key=settings.admin_api_key, user_identifier=identity
-                    )
+                result = await client.fetch_user_usage(
+                    admin_api_key=settings.admin_api_key,
+                    user_identifier=identity,
+                    correlation=correlation,
+                    inbound_authorization=credential,
+                    identity_source=identity_source,
+                )
+            # The one line every get_quota call produces at the default log level.
+            log_event(
+                logging.INFO,
+                "get_quota_completed",
+                tool="get_quota",
+                auth_source=auth_source,
+                auth_decision=auth_decision,
+                outbound_auth_mode=credential_mode,
+                budget_count=result.get("summary", {}).get("budget_count"),
+                duration_ms=round((time.perf_counter() - started_at) * 1000, 2),
+                **correlation,
+            )
+            return result
         except ToolError as exc:
-            log_event(logging.ERROR, "tool_error", tool="get_quota", auth_source=auth_source,
-                      reason_code=type(exc).__name__, **correlation)
+            log_event(
+                logging.ERROR,
+                "tool_error",
+                tool="get_quota",
+                auth_source=auth_source,
+                reason_code=type(exc).__name__,
+                duration_ms=round((time.perf_counter() - started_at) * 1000, 2),
+                **correlation,
+            )
             raise
 
     return server
@@ -131,7 +140,7 @@ def create_server() -> MCPServer[object]:
 
 def _resolve_credential(
     explicit: str | None,
-    ctx: Context[object] | None,
+    headers: dict[str, str],
     settings: BifrostSettings,
     correlation: dict[str, Any] | None = None,
 ) -> tuple[str, str, Literal["authorization", "virtual_key"], dict[str, Any]]:
@@ -144,7 +153,7 @@ def _resolve_credential(
             credential_mode="virtual_key",
         )
         log_event(
-            logging.INFO,
+            logging.DEBUG,
             "auth_source_selected",
             source="tool_argument",
             credential_identity=identity_trace, **correlation,
@@ -159,23 +168,23 @@ def _resolve_credential(
         )
         return resolved, "tool_argument", "virtual_key", identity_trace
 
-    headers = ctx.headers if ctx is not None else None
     if headers:
-        request_id = getattr(ctx, "request_id", None)
+        try:
+            request = get_http_request()
+            method, path = request.method, request.url.path
+        except RuntimeError:
+            method = path = None
         log_event(
-            logging.INFO,
+            logging.DEBUG,
             "inbound_request_diagnostics",
             transport="streamable-http",
             process_id=os.getpid(),
-            method=getattr(ctx, "method", None),
-            path=getattr(ctx, "path", None),
-            request_id_fingerprint=build_credential_trace(
-                str(request_id), auth_source="request_id", credential_mode="virtual_key"
-            ).get("token_fingerprint") if request_id else None,
+            method=method,
+            path=path,
             headers=header_diagnostics(headers),
         )
 
-        authorization = headers.get("authorization") or headers.get("Authorization")
+        authorization = headers.get("authorization")
         if authorization and authorization.strip():
             authorization_trace = build_credential_trace(
                 authorization,
@@ -183,7 +192,7 @@ def _resolve_credential(
                 credential_mode="authorization",
             )
             log_event(
-                logging.INFO,
+                logging.DEBUG,
                 "auth_source_selected",
                 source="request_header:authorization",
                 credential_identity=authorization_trace, **correlation,
@@ -223,7 +232,7 @@ def _resolve_credential(
                 "identity": identity,
             }
 
-        header_value = headers.get("x-bf-vk") or headers.get("X-BF-VK")
+        header_value = headers.get("x-bf-vk")
         if header_value and header_value.strip():
             credential = header_value.strip()
             identity_trace = build_credential_trace(
@@ -232,7 +241,7 @@ def _resolve_credential(
                 credential_mode="virtual_key",
             )
             log_event(
-                logging.INFO,
+                logging.DEBUG,
                 "auth_source_selected",
                 source="request_header:x-bf-vk",
                 credential_identity=identity_trace, **correlation,
@@ -255,7 +264,7 @@ def _resolve_credential(
             credential_mode="virtual_key",
         )
         log_event(
-            logging.INFO,
+            logging.DEBUG,
             "auth_source_selected",
             source="environment:BIFROST_VIRTUAL_KEY",
             credential_identity=identity_trace, **correlation,

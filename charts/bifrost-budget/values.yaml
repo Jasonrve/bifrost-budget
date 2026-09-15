@@ -3,7 +3,7 @@ replicaCount: 2
 image:
   repository: ghcr.io/jasonrve/bifrost-budget
   # Pin releases by default; override explicitly for a CI SHA or another release.
-  tag: "0.3.9"
+  tag: "0.4.0"
   pullPolicy: IfNotPresent
 
 service:
@@ -32,7 +32,8 @@ resources:
 
 env:
   apiBaseUrl: https://bifrost.example.com
-  userinfoUrl: https://sso-dev.sanlamcloud.co.za/as/userinfo
+  # Required only when the inbound JWT has no usable displayname claim.
+  userinfoUrl: ""
   transport: streamable-http
   mcpPath: /mcp
   timeoutSeconds: 15

@@ -7,7 +7,7 @@ from typing import Literal, cast
 DEFAULT_API_BASE_URL = ""
 DEFAULT_QUOTA_PATH = "/api/governance/virtual-keys/quota"
 DEFAULT_USERS_PATH = "/api/governance/users?limit=20"
-DEFAULT_USERINFO_URL = "https://sso-dev.sanlamcloud.co.za/as/userinfo"
+DEFAULT_USERINFO_URL = ""
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_HTTP_PORT = 8080
 DEFAULT_MCP_PATH = "/mcp"

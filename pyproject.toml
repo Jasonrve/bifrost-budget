@@ -4,17 +4,27 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bifrost-budget"
-version = "0.3.9"
-description = "Read-only MCP server for Bifrost credit and quota snapshots"
+version = "0.4.0"
+description = "Read-only MCP server for Bifrost credit and quota snapshots, built with FastMCP"
 readme = "README.md"
 requires-python = ">=3.11"
+license = {text = "MIT"}
 authors = [{name = "Jasonrve", email = "jasonrve@gmail.com"}]
+keywords = ["mcp", "model-context-protocol", "fastmcp", "bifrost", "llm", "budget", "quota"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
-  "fastapi>=0.141.1",
+  "fastmcp>=2.14.0",
   "httpx>=0.28.1",
-  "mcp>=2.2.0",
   "pydantic>=2.13.5",
-  "uvicorn>=0.52.4",
 ]
 
 [project.optional-dependencies]
@@ -22,6 +32,11 @@ dev = [
   "pytest>=9.0",
   "pytest-asyncio>=1.4.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Jasonrve/bifrost-budget"
+Repository = "https://github.com/Jasonrve/bifrost-budget"
+Issues = "https://github.com/Jasonrve/bifrost-budget/issues"
 
 [project.scripts]
 bifrost-budget = "bifrost_budget.__main__:main"
