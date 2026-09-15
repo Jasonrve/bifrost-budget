@@ -61,7 +61,7 @@ The default Streamable HTTP endpoint is `http://localhost:8080/mcp`; health is `
 
 ## Configuration
 
-Required: `BIFROST_API_BASE_URL` and `BIFROST_ADMIN_API_KEY`. Optional settings include `BIFROST_QUOTA_PATH`, `BIFROST_USERS_PATH`, `BIFROST_USERINFO_URL` (only needed if the inbound JWT has no usable `displayname` claim), `BIFROST_TIMEOUT_SECONDS` (15), `BIFROST_LOG_LEVEL` (INFO), `BIFROST_HOST` (0.0.0.0), `BIFROST_PORT` (8080), and `BIFROST_MCP_PATH` (/mcp).
+Required: `BIFROST_API_BASE_URL` and `BIFROST_ADMIN_API_KEY`. Optional settings include `BIFROST_QUOTA_PATH`, `BIFROST_USERS_PATH`, `BIFROST_USERINFO_URL` (defaults to `https://sso-dev.sanlamcloud.co.za/as/userinfo`, used when the inbound JWT has no usable `displayname` claim), `BIFROST_TIMEOUT_SECONDS` (15), `BIFROST_LOG_LEVEL` (INFO), `BIFROST_HOST` (0.0.0.0), `BIFROST_PORT` (8080), and `BIFROST_MCP_PATH` (/mcp). The UserInfo override must be an absolute HTTPS URL without credentials, query parameters, or fragments.
 
 In Kubernetes, configure `env.adminApiKey.existingSecret` in the Helm chart. The chart uses `secretKeyRef`; it does not accept an admin key value. Do not put credentials in images, command lines, manifests, README examples, or logs.
 
@@ -81,7 +81,7 @@ At the default `BIFROST_LOG_LEVEL=INFO`, each `get_quota` call logs exactly one 
 
 ## Immutable container usage
 
-Build locally with `docker build -t bifrost-budget:0.4.0 .`. The image runs as UID/GID 10001, drops Linux capabilities, and is designed for a read-only root filesystem. In production, use the immutable commit SHA or release tag published by CI rather than `latest`. CI derives the release tag from `pyproject.toml` and refuses to publish if that semantic version already exists in GHCR; the SHA and `latest` tags are intentionally explicit rolling tags:
+Build locally with `docker build -t bifrost-budget:0.4.1 .`. The image runs as UID/GID 10001, drops Linux capabilities, and is designed for a read-only root filesystem. In production, use the immutable commit SHA or release tag published by CI rather than `latest`. CI derives the release tag from `pyproject.toml` and refuses to publish if that semantic version already exists in GHCR; the SHA and `latest` tags are intentionally explicit rolling tags:
 
 ```bash
 docker run --read-only --user 10001:10001 -p 8080:8080 \
@@ -95,7 +95,7 @@ docker run --read-only --user 10001:10001 -p 8080:8080 \
 ```bash
 helm upgrade --install bifrost-budget charts/bifrost-budget \
   --namespace bifrost-budget --create-namespace \
-  --set image.tag=0.4.0 \
+  --set image.tag=0.4.1 \
   --set env.apiBaseUrl=https://bifrost.example.com \
   --set env.adminApiKey.existingSecret=bifrost-budget-admin
 ```

@@ -34,7 +34,7 @@ def create_server() -> FastMCP:
     server = FastMCP(
         name=SERVER_NAME,
         instructions=SERVER_INSTRUCTIONS,
-        version="0.4.0",
+        version="0.4.1",
     )
 
     @server.custom_route("/healthz", ["GET"], include_in_schema=False)

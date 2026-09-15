@@ -19,6 +19,8 @@ pytest -q
 
 Set `BIFROST_API_BASE_URL` for a local run. Do not use real credentials in tests or local logs. The server defaults to Streamable HTTP on `0.0.0.0:8080`, with `/healthz` and `/mcp`; use `BIFROST_TRANSPORT=stdio` when required by an MCP client.
 
+`BIFROST_USERINFO_URL` overrides the PingIdentity UserInfo endpoint and defaults to `https://sso-dev.sanlamcloud.co.za/as/userinfo`. It must be an absolute HTTPS URL with no userinfo credentials, query string, or fragment. Helm exposes the same setting as `env.userinfoUrl`; leave it at its default or set it per environment.
+
 ## Tests and quality gates
 
 The test suite covers identity precedence, URL encoding, auth separation, malformed input, Decimal half-up arithmetic, response fields, structured log redaction, and MCP/health behavior. Run `pytest -q` before committing. Run `helm lint charts/bifrost-budget` and, when Docker is available, build the image and verify its configured user with `docker inspect`.

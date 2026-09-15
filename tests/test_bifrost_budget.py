@@ -29,7 +29,7 @@ from bifrost_budget import __version__
 from bifrost_budget.__main__ import main
 from bifrost_budget.normalization import normalize_quota_payload
 from bifrost_budget.server import _resolve_credential, create_server
-from bifrost_budget.settings import BifrostSettings
+from bifrost_budget.settings import BifrostSettings, DEFAULT_USERINFO_URL
 
 
 def _make_jwt(payload: dict[str, object]) -> str:
@@ -80,7 +80,7 @@ def test_main_emits_service_version_without_sensitive_configuration(
     assert '"build_id":"abc123deadbeef"' in log_text
     assert "admin-secret" not in log_text
     assert "Authorization" not in log_text
-    assert __version__ == "0.4.0"
+    assert __version__ == "0.4.1"
 
 
 def test_service_version_uses_unknown_for_missing_metadata_and_invalid_build_id(
@@ -317,11 +317,30 @@ async def test_userinfo_rejects_invalid_username(payload: dict[str, object], rea
 
 
 @pytest.mark.asyncio
-async def test_userinfo_requires_configured_url() -> None:
-    settings = BifrostSettings(api_base_url="https://bifrost.example.com")
+async def test_userinfo_uses_safe_default_url() -> None:
+    settings = BifrostSettings.from_env(api_base_url="https://bifrost.example.com")
+    assert settings.userinfo_url == DEFAULT_USERINFO_URL
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, json={}))) as client:
-        with pytest.raises(ToolError, match="BIFROST_USERINFO_URL"):
+        with pytest.raises(ToolError, match="UserInfo"):
             await BifrostClient(settings, client=client).fetch_userinfo_identity(authorization="Bearer token")
+
+
+def test_userinfo_url_can_be_overridden_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BIFROST_USERINFO_URL", "https://login.example.test/oidc/userinfo")
+    settings = BifrostSettings.from_env(api_base_url="https://bifrost.example.com")
+    assert settings.userinfo_url == "https://login.example.test/oidc/userinfo"
+
+
+@pytest.mark.parametrize("url", [
+    "http://login.example.test/userinfo",
+    "https://user:password@login.example.test/userinfo",
+    "https://login.example.test/userinfo?token=secret",
+    "https://login.example.test/userinfo#fragment",
+])
+def test_userinfo_url_rejects_unsafe_environment_values(monkeypatch: pytest.MonkeyPatch, url: str) -> None:
+    monkeypatch.setenv("BIFROST_USERINFO_URL", url)
+    with pytest.raises(ValueError, match="BIFROST_USERINFO_URL"):
+        BifrostSettings.from_env(api_base_url="https://bifrost.example.com")
 
 
 @pytest.mark.asyncio

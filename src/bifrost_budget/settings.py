@@ -3,16 +3,27 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from typing import Literal, cast
+from urllib.parse import urlsplit
 
 DEFAULT_API_BASE_URL = ""
 DEFAULT_QUOTA_PATH = "/api/governance/virtual-keys/quota"
 DEFAULT_USERS_PATH = "/api/governance/users?limit=20"
-DEFAULT_USERINFO_URL = ""
+DEFAULT_USERINFO_URL = "https://sso-dev.sanlamcloud.co.za/as/userinfo"
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_HTTP_PORT = 8080
 DEFAULT_MCP_PATH = "/mcp"
 DEFAULT_TIMEOUT_SECONDS = 15.0
 DEFAULT_TRANSPORT: Literal["streamable-http", "stdio"] = "streamable-http"
+
+
+def validate_userinfo_url(url: str) -> str:
+    """Require a host-only HTTPS UserInfo endpoint without credential-bearing data."""
+    value = url.strip()
+    parts = urlsplit(value)
+    if (parts.scheme != "https" or not parts.hostname or parts.username or parts.password
+            or parts.query or parts.fragment):
+        raise ValueError("BIFROST_USERINFO_URL must be an absolute HTTPS URL without credentials, query, or fragment")
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,7 +80,10 @@ class BifrostSettings:
             api_base_url=resolved_api_base_url,
             quota_path=(quota_path or os.getenv("BIFROST_QUOTA_PATH", DEFAULT_QUOTA_PATH)).strip() or DEFAULT_QUOTA_PATH,
             users_path=os.getenv("BIFROST_USERS_PATH", DEFAULT_USERS_PATH).strip() or DEFAULT_USERS_PATH,
-            userinfo_url=(userinfo_url or os.getenv("BIFROST_USERINFO_URL", DEFAULT_USERINFO_URL)).strip() or DEFAULT_USERINFO_URL,
+            userinfo_url=validate_userinfo_url(
+                (userinfo_url or os.getenv("BIFROST_USERINFO_URL", DEFAULT_USERINFO_URL)).strip()
+                or DEFAULT_USERINFO_URL
+            ),
             timeout_seconds=float(timeout_seconds or os.getenv("BIFROST_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS)),
             transport=transport_value,
             host=(host or os.getenv("BIFROST_HOST", DEFAULT_HOST)).strip() or DEFAULT_HOST,
