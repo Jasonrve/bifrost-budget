@@ -15,7 +15,7 @@ RUN uv pip install --system --no-cache-dir .
 
 FROM python:3.11-slim-bookworm AS runtime
 
-ARG VERSION=0.3.9
+ARG VERSION=0.4.0
 ARG BUILD_SHA=unknown
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

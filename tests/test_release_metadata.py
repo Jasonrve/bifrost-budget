@@ -18,7 +18,7 @@ def test_release_version_is_canonical_and_consistent() -> None:
         "charts/bifrost-budget/values.yaml": f'tag: "{VERSION}"',
         "src/bifrost_budget/__init__.py": f'__version__ = "{VERSION}"',
         "src/bifrost_budget/server.py": f'version="{VERSION}"',
-        "uv.lock": f'version = "{VERSION}"',
+        "uv.lock": f'name = "bifrost-budget"\nversion = "{VERSION}"',
     }
     for relative_path, marker in expected.items():
         assert marker in (ROOT / relative_path).read_text(), relative_path

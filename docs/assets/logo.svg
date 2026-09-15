@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200" role="img" aria-label="Bifrost Budget">
+  <defs>
+    <linearGradient id="bandA" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#eafff5"/>
+      <stop offset="1" stop-color="#2fae86"/>
+    </linearGradient>
+    <linearGradient id="bandB" x1="1" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#dff5ea"/>
+      <stop offset="1" stop-color="#1f8a6c"/>
+    </linearGradient>
+    <linearGradient id="coin" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fef3c7"/>
+      <stop offset="1" stop-color="#d97706"/>
+    </linearGradient>
+  </defs>
+
+  <!-- gateway: two crossing ribbons, in the spirit of an AI-gateway "routing" mark -->
+  <rect x="0" y="0" width="200" height="200" rx="40" fill="#0e2f2a"/>
+  <g>
+    <rect x="25" y="87" width="150" height="26" rx="6" fill="url(#bandB)" transform="rotate(-45 100 100)"/>
+    <rect x="25" y="87" width="150" height="26" rx="6" fill="url(#bandA)" transform="rotate(45 100 100)"/>
+    <rect x="90" y="90" width="20" height="20" rx="4" fill="#0e2f2a" opacity="0.28" transform="rotate(45 100 100)"/>
+  </g>
+
+  <!-- budget: a coin badge tracking spend on the gateway -->
+  <circle cx="158" cy="158" r="34" fill="url(#coin)" stroke="#0e2f2a" stroke-width="6"/>
+  <text x="158" y="169" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="34" font-weight="700" fill="#78350f" text-anchor="middle">$</text>
+</svg>

@@ -2,7 +2,7 @@
 
 ## Architecture
 
-`src/bifrost_budget/server.py` owns the MCP tool and `/healthz` route. `client.py` contains asynchronous HTTP calls and authentication separation. `normalization.py` converts governance budgets to the stable response model in `models.py`; `settings.py` validates environment configuration. `logging.py` provides structured, value-free diagnostics.
+Built on [FastMCP](https://gofastmcp.com). `src/bifrost_budget/server.py` owns the `get_quota` tool and `/healthz` route. `client.py` contains asynchronous HTTP calls and authentication separation. `normalization.py` converts governance budgets to the stable response model in `models.py`; `settings.py` validates environment configuration. `logging.py` provides structured, value-free diagnostics.
 
 The production path is intentionally two-legged: the inbound PingIdentity bearer identifies the caller and is used only for UserInfo fallback; `BIFROST_ADMIN_API_KEY` authenticates governance lookup. Never substitute one for the other.
 
@@ -38,6 +38,10 @@ Review the lock diff for compatible stable versions and vulnerability fixes. Do 
 ## Logging and redaction rules
 
 Logs are JSON events, not request dumps. Allowed diagnostics are event names, status codes, host/path metadata without query values, parameter names/presence, types, lengths, counts, reason codes, auth-mode labels, and keyed fingerprints. Never log raw headers, Authorization values, API keys, cookies, passwords, identities, JWT claim values, query values, response bodies, exception strings that may contain URLs, or arbitrary upstream objects. Add a regression test whenever a new diagnostic field is introduced. Fingerprints must use `fingerprint_value` and remain operationally sensitive.
+
+### Log levels
+
+`BIFROST_LOG_LEVEL` (default `INFO`) controls verbosity. At the default level, a `get_quota` call produces exactly one line: `get_quota_completed` on success or `tool_error` on failure, each with `auth_source`, `duration_ms`, and a correlation fingerprint. Every intermediate step — credential resolution, the upstream quota/governance/UserInfo requests and responses, identity matching — is logged at `DEBUG` with full detail, so nothing is lost; it's just quiet until you ask for it. Error events (`upstream_quota_error`, `userinfo_error`, `auth_source_missing`) always log at `ERROR` regardless of the configured level. Set `BIFROST_LOG_LEVEL=DEBUG` to see the full per-request trace when troubleshooting.
 
 ## Release and build workflow
 

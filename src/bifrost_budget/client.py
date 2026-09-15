@@ -7,7 +7,7 @@ from typing import Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
-from mcp.server.mcpserver.exceptions import ToolError
+from fastmcp.exceptions import ToolError
 
 from .logging import build_credential_trace, fingerprint_value, log_event
 from .normalization import normalize_quota_payload
@@ -48,7 +48,7 @@ class BifrostClient:
         )
         auth_headers = sorted(name for name in headers if name in {"authorization", "x-bf-vk"})
         log_event(
-            logging.INFO,
+            logging.DEBUG,
             "upstream_quota_request",
             quota_url=self.settings.quota_url,
             auth_source=auth_source,
@@ -100,7 +100,7 @@ class BifrostClient:
             queried_at=datetime.now(timezone.utc),
         )
         log_event(
-            logging.INFO,
+            logging.DEBUG,
             "upstream_quota_success",
             quota_url=self.settings.quota_url,
             auth_source=auth_source,
@@ -144,7 +144,7 @@ class BifrostClient:
             inbound_authorization, auth_source="inbound_authorization", credential_mode="authorization"
         ) if inbound_authorization else {}
         log_event(
-            logging.INFO,
+            logging.DEBUG,
             "governance_user_request",
             outbound_auth_mode="admin_api_key",
             inbound_credential="pingidentity_authorization",
@@ -161,7 +161,7 @@ class BifrostClient:
             headers={"accept": "application/json", "authorization": f"Bearer {admin_api_key}"},
         )
         log_event(
-            logging.INFO,
+            logging.DEBUG,
             "governance_user_response",
             status_code=response.status_code,
             outbound_auth_mode="admin_api_key",
@@ -198,7 +198,7 @@ class BifrostClient:
             if matched_fields:
                 matches.append(user)
         log_event(
-            logging.INFO,
+            logging.DEBUG,
             "user_lookup_match",
             status_code=response.status_code,
             returned_user_count=len(users),
@@ -230,7 +230,7 @@ class BifrostClient:
                     "max_limit": max_limit,
                     "unit": budget.get("unit"),
                 })
-        log_event(logging.INFO, "usage_extraction", budget_count=len(budgets), malformed_budget_count=malformed)
+        log_event(logging.DEBUG, "usage_extraction", budget_count=len(budgets), malformed_budget_count=malformed)
         return normalize_quota_payload(
             {"budgets": budgets}, endpoint=user_lookup_url, auth_source="admin_api_key",
             queried_at=datetime.now(timezone.utc),
@@ -239,9 +239,14 @@ class BifrostClient:
     async def fetch_userinfo_identity(self, *, authorization: str, correlation: dict[str, Any] | None = None) -> str:
         """Resolve the caller using inbound bearer credentials, never the governance key."""
         url = self.settings.userinfo_url
+        if not url.strip():
+            raise ToolError(
+                "BIFROST_USERINFO_URL must be configured to resolve caller identity when the "
+                "inbound JWT has no usable displayname claim"
+            )
         trace = build_credential_trace(authorization, auth_source="userinfo", credential_mode="authorization")
         correlation = correlation or {}
-        log_event(logging.INFO, "userinfo_request", request_url=url, auth_headers=["authorization"],
+        log_event(logging.DEBUG, "userinfo_request", request_url=url, auth_headers=["authorization"],
                   inbound_credential_fingerprint=trace.get("token_fingerprint"), inbound_credential_length=trace.get("token_length"), **correlation)
         try:
             response = await self._client.get(url, headers={"accept": "application/json", "authorization": authorization})
@@ -271,13 +276,13 @@ class BifrostClient:
             if isinstance(value, str) and value.strip():
                 item["value_fingerprint"] = fingerprint_value(value)
             metadata.append(item)
-        log_event(logging.INFO, "userinfo_response", request_url=url, status_code=response.status_code,
+        log_event(logging.DEBUG, "userinfo_response", request_url=url, status_code=response.status_code,
                   decode_success=True, response_field_names=sorted(payload), response_field_metadata=metadata, **correlation)
         for field in ("name", "preferred_username"):
             value = payload.get(field)
             if isinstance(value, str) and value.strip():
                 identity = value.strip()
-                log_event(logging.INFO, "userinfo_identity_selected", request_url=url,
+                log_event(logging.DEBUG, "userinfo_identity_selected", request_url=url,
                           selected_identity_field=field, identity_length=len(identity),
                           identity_fingerprint=fingerprint_value(identity), search_identity_length=len(identity),
                           selected_identity_source=f"userinfo.{field}", reason_code="identity_selected", **correlation)
