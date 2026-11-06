@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.2
+
+- Require an operator-verified Ping delegation claim/value issuance-policy contract and reject app/client-credentials indicators before identity lookup.
+- Reject incomplete or malformed governance budget rows rather than returning an empty or partial report.
+- Document synthetic-only configuration guidance; keep release publication manual.
+
 ## 0.5.1
 
 - Publish a fresh immutable container from the sanitized canonical history; keep existing published versions unchanged.

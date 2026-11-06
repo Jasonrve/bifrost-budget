@@ -195,14 +195,19 @@ class BifrostClient:
         if len(matches) != 1:
             raise ToolError("No unique Bifrost governance user matched the authenticated identity")
         budgets: list[dict[str, Any]] = []
-        malformed = 0
-        profiles = matches[0].get("access_profiles")
-        for profile in profiles if isinstance(profiles, list) else []:
-            profile_budgets = profile.get("budgets") if isinstance(profile, dict) else None
-            for budget in profile_budgets if isinstance(profile_budgets, list) else []:
+        user = matches[0]
+        profiles = user.get("access_profiles", [])
+        if not isinstance(profiles, list):
+            raise ToolError("Bifrost governance access_profiles container is malformed")
+        for profile in profiles:
+            if not isinstance(profile, dict):
+                raise ToolError("Bifrost governance access profile is malformed")
+            profile_budgets = profile.get("budgets", [])
+            if not isinstance(profile_budgets, list):
+                raise ToolError("Bifrost governance budgets container is malformed")
+            for budget in profile_budgets:
                 if not isinstance(budget, dict) or "current_usage" not in budget:
-                    malformed += 1
-                    continue
+                    raise ToolError("Bifrost governance budget row is malformed")
                 current_usage = _parse_money(budget.get("current_usage"))
                 max_limit = _parse_money(budget.get("max_limit", budget.get("limit")))
                 if current_usage is None or max_limit is None:
@@ -215,7 +220,7 @@ class BifrostClient:
                     "max_limit": max_limit,
                     "unit": budget.get("unit"),
                 })
-        log_event(logging.DEBUG, "usage_extraction", budget_count=len(budgets), malformed_budget_count=malformed)
+        log_event(logging.DEBUG, "usage_extraction", budget_count=len(budgets))
         return normalize_quota_payload(
             {"budgets": budgets}, endpoint=user_lookup_url, auth_source="admin_api_key",
             queried_at=datetime.now(timezone.utc),

@@ -83,6 +83,47 @@ async def test_exact_id_governance_match_requires_one_user_and_hides_search_pii(
             await BifrostClient(_settings(), client=client).fetch_user_usage(admin_api_key="admin-secret", user_identifier="bifrost-user-7", exact_id=True)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("budgets", [
+    [{"name": "daily", "limit": "12.50"}],
+    [{"name": "good", "limit": "12.50", "current_usage": "2.25"}, {"name": "bad", "limit": "8.00"}],
+    [{"name": "daily", "current_usage": "2.25"}],
+])
+async def test_governance_rejects_every_malformed_budget_row(budgets):
+    payload = {"users": [{"id": "bifrost-user-7", "access_profiles": [{"budgets": budgets}]}]}
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload))) as client:
+        with pytest.raises(ToolError):
+            await BifrostClient(_settings(), client=client).fetch_user_usage(admin_api_key="admin-secret", user_identifier="bifrost-user-7", exact_id=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("user", [
+    {"id": "bifrost-user-7", "access_profiles": "bad"},
+    {"id": "bifrost-user-7", "access_profiles": None},
+    {"id": "bifrost-user-7", "access_profiles": [{"budgets": "bad"}]},
+    {"id": "bifrost-user-7", "access_profiles": [{"budgets": None}]},
+    {"id": "bifrost-user-7", "access_profiles": [{"budgets": []}, "bad"]},
+    {"id": "bifrost-user-7", "access_profiles": [{"budgets": [{"limit": "10", "current_usage": "2"}]}, "bad"]},
+])
+async def test_governance_rejects_malformed_profile_and_budget_containers(user):
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, json={"users": [user]}))) as client:
+        with pytest.raises(ToolError, match="governance .*malformed"):
+            await BifrostClient(_settings(), client=client).fetch_user_usage(admin_api_key="admin-secret", user_identifier="bifrost-user-7", exact_id=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("user", [
+    {"id": "bifrost-user-7"},
+    {"id": "bifrost-user-7", "access_profiles": []},
+    {"id": "bifrost-user-7", "access_profiles": [{"budgets": []}]},
+    {"id": "bifrost-user-7", "access_profiles": [{"budgets": []}, {"budgets": []}]},
+])
+async def test_governance_accepts_omitted_and_empty_profile_collections(user):
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, json={"users": [user]}))) as client:
+        result = await BifrostClient(_settings(), client=client).fetch_user_usage(admin_api_key="admin-secret", user_identifier="bifrost-user-7", exact_id=True)
+    assert result["budgets"] == []
+
+
 async def _invoke_tool(server, token: str, api_base_url: str | None = None):
     from fastmcp import Client
     from fastmcp.client.transports import StreamableHttpTransport
@@ -334,10 +375,16 @@ def test_provider_configuration_fails_closed_and_ping_requires_explicit_scope(mo
     monkeypatch.setenv("BIFROST_PING_AUDIENCE", AUDIENCE)
     monkeypatch.setenv("BIFROST_PING_DISCOVERY_URL", DISCOVERY)
     monkeypatch.setenv("BIFROST_PING_JWKS_URL", JWKS)
-    monkeypatch.delenv("BIFROST_USERINFO_URL", raising=False)
-    with pytest.raises(ValueError, match="delegated scope"):
-        BifrostSettings.from_env()
     monkeypatch.setenv("BIFROST_PING_SCOPE", "quota.read")
+    monkeypatch.delenv("BIFROST_USERINFO_URL", raising=False)
+    with pytest.raises(ValueError, match="delegated claim/value"):
+        BifrostSettings.from_env()
+    monkeypatch.setenv("BIFROST_PING_DELEGATED_CLAIM", "displayname")
+    monkeypatch.setenv("BIFROST_PING_DELEGATED_VALUE", "human")
+    with pytest.raises(ValueError, match="dedicated"):
+        BifrostSettings.from_env()
+    monkeypatch.setenv("BIFROST_PING_DELEGATED_CLAIM", "delegated_user")
+    monkeypatch.setenv("BIFROST_PING_DELEGATED_VALUE", "human")
     with pytest.raises(ValueError, match="BIFROST_USERINFO_URL"):
         BifrostSettings.from_env()
     monkeypatch.setenv("BIFROST_USERINFO_URL", "https://ping.example.test/userinfo")
@@ -348,13 +395,31 @@ def test_provider_configuration_fails_closed_and_ping_requires_explicit_scope(mo
 
 def test_ping_claim_identity_requires_scope_and_never_uses_mutable_claim_fallback():
     from dataclasses import replace
-    settings = replace(_settings(), auth_provider="ping", auth_scope="quota.read")
-    assert _validated_identity({"scope": "quota.read", "displayname": "Verified Display"}, settings) == ("Verified Display", "ping_jwt_displayname")
+    settings = replace(_settings(), auth_provider="ping", auth_scope="quota.read", ping_delegated_claim="delegated_user", ping_delegated_value="true")
+    base = {"scope": "quota.read", "displayname": "Verified Display", "sub": "person-7", "delegated_user": "true"}
+    assert _validated_identity(base, settings) == ("Verified Display", "ping_jwt_displayname")
     with pytest.raises(AuthenticationError):
-        _validated_identity({"scope": "other", "displayname": "Verified Display"}, settings)
+        _validated_identity({**base, "scope": "other"}, settings)
+    for changes in ({"delegated_user": ["true"]}, {"delegated_user": True}, {"delegated_user": "false"}, {"sub": ""}, {"idtyp": "app"}, {"gty": "client_credentials"}, {"grant_type": "client-credentials"}, {"client_id": "person-7"}):
+        with pytest.raises(AuthenticationError):
+            _validated_identity({**base, **changes}, settings)
+    with pytest.raises(AuthenticationError):
+        _validated_identity({"scope": "quota.read", "displayname": "Verified Display", "sub": "person-7"}, replace(settings, ping_delegated_claim="", ping_delegated_value=""))
     with pytest.raises(AuthenticationError) as error:
-        _validated_identity({"scope": "quota.read", "name": "Mutable Name", "preferred_username": "mutable@example.test"}, settings)
+        _validated_identity({**base, "name": "Mutable Name", "preferred_username": "mutable@example.test", "displayname": None}, settings)
     assert error.value.code == "userinfo_required"
+
+
+@pytest.mark.parametrize("claim,value", [
+    ("", "human"), ("scope", "human"), ("displayname", "human"),
+    ("delegated user", "human"), ("delegated_user", ""),
+    ("delegated_user", " human "),
+])
+def test_ping_direct_settings_path_requires_valid_delegation_contract(claim, value):
+    from dataclasses import replace
+    with pytest.raises(AuthenticationError) as error:
+        _validated_identity({"scope": "quota.read", "sub": "person-7", "delegated_user": "true"}, replace(_settings(), auth_provider="ping", auth_scope="quota.read", ping_delegated_claim=claim, ping_delegated_value=value))
+    assert error.value.code == "delegation_contract_invalid"
 
 
 @pytest.mark.asyncio
@@ -430,12 +495,104 @@ async def test_explicit_ping_provider_validates_then_uses_subject_bound_userinfo
     monkeypatch.setenv("BIFROST_PING_DISCOVERY_URL", ping_discovery)
     monkeypatch.setenv("BIFROST_PING_JWKS_URL", ping_jwks)
     monkeypatch.setenv("BIFROST_PING_SCOPE", "quota.read")
+    monkeypatch.setenv("BIFROST_PING_DELEGATED_CLAIM", "delegated_user")
+    monkeypatch.setenv("BIFROST_PING_DELEGATED_VALUE", "human")
     monkeypatch.setenv("BIFROST_USERINFO_URL", userinfo)
-    token = jwt.encode({"iss": ping_issuer, "aud": ping_audience, "sub": "ping-subject", "exp": int(time.time())+300, "nbf": int(time.time())-1, "scope": "quota.read"}, private, algorithm="RS256", headers={"kid": "key-1"})
+    token = jwt.encode({"iss": ping_issuer, "aud": ping_audience, "sub": "ping-subject", "exp": int(time.time())+300, "nbf": int(time.time())-1, "scope": "quota.read", "delegated_user": "human"}, private, algorithm="RS256", headers={"kid": "key-1"})
     result = await _invoke_tool(server_module.create_server(), "Bearer " + token)
     assert result.is_error is False
     assert result.structured_content["budgets"][0]["remaining"] == 6.0
     assert [request.url.path for request in calls] == ["/metadata", "/keys", "/userinfo", "/api/governance/users"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extra", [
+    {"gty": "client-credentials", "client_id": "synthetic-client", "sub": "synthetic-client", "displayname": "Synthetic Human", "delegated_user": None},
+    {"scope": "quota.read", "displayname": "Synthetic Human", "delegated_user": None},
+    {"delegated_user": ["human"], "displayname": "Synthetic Human"},
+    {"delegated_user": True, "displayname": "Synthetic Human"},
+    {"delegated_user": "other", "displayname": "Synthetic Human"},
+    {"scope": ["quota.read"], "displayname": "Synthetic Human"},
+    {"idtyp": "app", "delegated_user": "human", "displayname": "Synthetic Human"},
+    {"idtyp": " APP ", "delegated_user": "human", "displayname": "Synthetic Human"},
+    {"idtyp": 1, "delegated_user": "human", "displayname": "Synthetic Human"},
+    {"idtyp": ["app"], "delegated_user": "human", "displayname": "Synthetic Human"},
+    {"idtyp": False, "delegated_user": "human", "displayname": "Synthetic Human"},
+    {"idtyp": None, "delegated_user": "human", "displayname": "Synthetic Human"},
+    {"gty": "client_credentials", "delegated_user": "human", "displayname": "Synthetic Human"},
+    {"gty": " CLIENT_CREDENTIALS ", "delegated_user": "human", "displayname": "Synthetic Human"},
+    {"gty": 1, "delegated_user": "human", "displayname": "Synthetic Human"},
+    {"gty": ["user"], "delegated_user": "human", "displayname": "Synthetic Human"},
+    {"gty": False, "delegated_user": "human", "displayname": "Synthetic Human"},
+    {"gty": None, "delegated_user": "human", "displayname": "Synthetic Human"},
+    {"grant_type": "client-credentials", "displayname": "Synthetic Human"},
+    {"grant_type": "client_credentials", "displayname": "Synthetic Human"},
+    {"grant_type": " Client_Credentials ", "delegated_user": "human", "displayname": "Synthetic Human"},
+    {"grant_type": 1, "delegated_user": "human", "displayname": "Synthetic Human"},
+    {"grant_type": ["authorization_code"], "delegated_user": "human", "displayname": "Synthetic Human"},
+    {"grant_type": False, "delegated_user": "human", "displayname": "Synthetic Human"},
+    {"grant_type": None, "delegated_user": "human", "displayname": "Synthetic Human"},
+    {"client_id": "person-7", "displayname": "Synthetic Human"},
+    {"sub": "", "displayname": "Synthetic Human"},
+])
+async def test_ping_signed_ambiguous_or_client_tokens_never_reach_governance(monkeypatch, extra):
+    import importlib
+    server_module = importlib.import_module("bifrost_budget.server")
+    private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    jwk = jwt.algorithms.RSAAlgorithm.to_jwk(private.public_key(), as_dict=True)
+    jwk.update(kid="key-1", use="sig", alg="RS256")
+    issuer, audience = "https://ping.example.test/oauth", "ping-resource"
+    discovery, keys = "https://ping.example.test/metadata", "https://ping.example.test/keys"
+    calls = []
+    def handler(request):
+        calls.append(request)
+        if str(request.url) == discovery: return httpx.Response(200, json={"issuer": issuer, "jwks_uri": keys})
+        if str(request.url) == keys: return httpx.Response(200, json={"keys": [jwk]})
+        if request.url.path == "/api/governance/users": return httpx.Response(200, json={"users": []})
+        if str(request.url) == "https://ping.example.test/userinfo": return httpx.Response(200, json={"sub": "person-7", "name": "Synthetic Human"})
+        raise AssertionError("unexpected outbound request")
+    class MockBifrostClient(BifrostClient):
+        def __init__(self, settings): super().__init__(settings, client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+        async def __aexit__(self, *args): await self._client.aclose()
+    monkeypatch.setattr(server_module, "BifrostClient", MockBifrostClient)
+    for key, value in {"BIFROST_API_BASE_URL": "https://bifrost.example.test", "BIFROST_ADMIN_API_KEY": "synthetic-admin", "BIFROST_AUTH_PROVIDER": "ping", "BIFROST_PING_ISSUER": issuer, "BIFROST_PING_AUDIENCE": audience, "BIFROST_PING_DISCOVERY_URL": discovery, "BIFROST_PING_JWKS_URL": keys, "BIFROST_PING_SCOPE": "quota.read", "BIFROST_PING_DELEGATED_CLAIM": "delegated_user", "BIFROST_PING_DELEGATED_VALUE": "human", "BIFROST_USERINFO_URL": "https://ping.example.test/userinfo"}.items(): monkeypatch.setenv(key, value)
+    now = int(time.time())
+    claims = {"iss": issuer, "aud": audience, "sub": "person-7", "exp": now+300, "nbf": now-1, "scope": "quota.read", "delegated_user": "human", **extra}
+    if claims.get("delegated_user") is None:
+        claims.pop("delegated_user", None)
+    token = jwt.encode(claims, private, algorithm="RS256", headers={"kid": "key-1"})
+    result = await _invoke_tool(server_module.create_server(), "Bearer " + token)
+    assert result.is_error
+    assert not any(request.url.path in {"/api/governance/users", "/userinfo"} for request in calls)
+
+
+@pytest.mark.asyncio
+async def test_ping_signed_delegation_marker_allows_legacy_displayname(monkeypatch):
+    import importlib
+    server_module = importlib.import_module("bifrost_budget.server")
+    private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    jwk = jwt.algorithms.RSAAlgorithm.to_jwk(private.public_key(), as_dict=True)
+    jwk.update(kid="key-1", use="sig", alg="RS256")
+    issuer, audience = "https://ping.example.test/oauth", "ping-resource"
+    discovery, keys = "https://ping.example.test/metadata", "https://ping.example.test/keys"
+    seen = []
+    def handler(request):
+        seen.append(request)
+        if str(request.url) == discovery: return httpx.Response(200, json={"issuer": issuer, "jwks_uri": keys})
+        if str(request.url) == keys: return httpx.Response(200, json={"keys": [jwk]})
+        if request.url.path == "/api/governance/users": return httpx.Response(200, json={"users": [{"name": "Synthetic Human", "access_profiles": [{"budgets": [{"limit": "10", "current_usage": "4"}]}]}]})
+        raise AssertionError("unexpected outbound request")
+    class MockBifrostClient(BifrostClient):
+        def __init__(self, settings): super().__init__(settings, client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+        async def __aexit__(self, *args): await self._client.aclose()
+    monkeypatch.setattr(server_module, "BifrostClient", MockBifrostClient)
+    for key, value in {"BIFROST_API_BASE_URL": "https://bifrost.example.test", "BIFROST_ADMIN_API_KEY": "synthetic-admin", "BIFROST_AUTH_PROVIDER": "ping", "BIFROST_PING_ISSUER": issuer, "BIFROST_PING_AUDIENCE": audience, "BIFROST_PING_DISCOVERY_URL": discovery, "BIFROST_PING_JWKS_URL": keys, "BIFROST_PING_SCOPE": "quota.read", "BIFROST_PING_DELEGATED_CLAIM": "delegated_user", "BIFROST_PING_DELEGATED_VALUE": "human", "BIFROST_USERINFO_URL": "https://ping.example.test/userinfo"}.items(): monkeypatch.setenv(key, value)
+    now = int(time.time())
+    token = jwt.encode({"iss": issuer, "aud": audience, "sub": "person-7", "exp": now+300, "nbf": now-1, "scope": "quota.read", "delegated_user": "human", "displayname": "Synthetic Human"}, private, algorithm="RS256", headers={"kid": "key-1"})
+    result = await _invoke_tool(server_module.create_server(), "Bearer " + token)
+    assert not result.is_error
+    assert result.structured_content["budgets"][0]["remaining"] == 6.0
+    assert all(request.url.path != "/userinfo" for request in seen)
 
 
 @pytest.mark.asyncio

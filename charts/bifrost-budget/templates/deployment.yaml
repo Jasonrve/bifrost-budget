@@ -70,6 +70,10 @@ spec:
               value: {{ .Values.env.pingJwksUrl | quote }}
             - name: BIFROST_PING_SCOPE
               value: {{ .Values.env.pingScope | quote }}
+            - name: BIFROST_PING_DELEGATED_CLAIM
+              value: {{ .Values.env.pingDelegatedClaim | quote }}
+            - name: BIFROST_PING_DELEGATED_VALUE
+              value: {{ .Values.env.pingDelegatedValue | quote }}
             {{- if .Values.env.userinfoUrl }}
             - name: BIFROST_USERINFO_URL
               value: {{ .Values.env.userinfoUrl | quote }}

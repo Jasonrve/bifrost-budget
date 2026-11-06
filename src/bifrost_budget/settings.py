@@ -18,6 +18,23 @@ DEFAULT_TIMEOUT_SECONDS = 15.0
 DEFAULT_TRANSPORT: Literal["streamable-http", "stdio"] = "streamable-http"
 DEFAULT_AUTH_PROVIDER = "entra"
 
+# A dedicated issuer-controlled marker is required; identity/protocol fields are
+# not evidence that the issuer authenticated a delegated human subject.
+_PING_NON_DELEGATION_CLAIMS = frozenset({
+    "displayname", "name", "scope", "scp", "sub", "client_id", "clientid",
+    "aud", "iss", "idtyp", "gty", "grant_type", "exp", "nbf", "iat", "tid",
+    "oid", "azp", "ver", "email", "upn", "uid", "user_id", "username",
+    "preferred_username",
+})
+
+
+def validate_ping_delegation_contract(claim: str, value: str) -> None:
+    """Validate configuration only, never infer the issuer's issuance policy."""
+    if (not isinstance(claim, str) or not claim or any(c.isspace() for c in claim)
+            or claim.lower() in _PING_NON_DELEGATION_CLAIMS
+            or not isinstance(value, str) or not value.strip() or value != value.strip()):
+        raise ValueError("Ping requires a dedicated non-identity delegated claim/value configuration")
+
 
 def _auth_config() -> dict[str, object]:
     provider = os.getenv("BIFROST_AUTH_PROVIDER", DEFAULT_AUTH_PROVIDER).strip().lower()
@@ -68,13 +85,17 @@ def _auth_config() -> dict[str, object]:
     discovery = os.getenv("BIFROST_PING_DISCOVERY_URL", "").strip()
     jwks = os.getenv("BIFROST_PING_JWKS_URL", "").strip()
     scope = os.getenv("BIFROST_PING_SCOPE", "").strip()
-    if not all((issuer, audience, discovery, jwks, scope)) or any(char.isspace() for char in scope):
-        raise ValueError("Ping requires issuer, audience, discovery, JWKS, and delegated scope configuration")
+    delegated_claim = os.getenv("BIFROST_PING_DELEGATED_CLAIM", "").strip()
+    delegated_value = os.getenv("BIFROST_PING_DELEGATED_VALUE", "")
+    if not all((issuer, audience, discovery, jwks, scope, delegated_claim, delegated_value)) or any(char.isspace() for char in scope):
+        raise ValueError("Ping requires issuer, audience, discovery, JWKS, delegated scope, and delegated claim/value configuration")
+    validate_ping_delegation_contract(delegated_claim, delegated_value)
     from .auth import _https
     if not all(_https(x) for x in (issuer, discovery, jwks)):
         raise ValueError("Ping issuer, discovery, and JWKS URLs must use HTTPS")
     return {"provider": provider, "issuer": issuer, "discovery_url": discovery, "jwks_url": jwks,
-            "audience": audience, "scope": scope, "user_map": {}}
+            "audience": audience, "scope": scope, "user_map": {},
+            "ping_delegated_claim": delegated_claim, "ping_delegated_value": delegated_value}
 
 
 def validate_userinfo_url(url: str) -> str:
@@ -109,6 +130,8 @@ class BifrostSettings:
     auth_audience: str = ""
     auth_scope: str = ""
     entra_user_map: dict[str, str] | None = None
+    ping_delegated_claim: str = ""
+    ping_delegated_value: str = ""
 
     @property
     def quota_url(self) -> str:
@@ -175,6 +198,6 @@ class BifrostSettings:
             port=int(port or os.getenv("BIFROST_PORT", DEFAULT_HTTP_PORT)),
             mcp_path=(mcp_path or os.getenv("BIFROST_MCP_PATH", DEFAULT_MCP_PATH)).strip() or DEFAULT_MCP_PATH,
             admin_api_key=os.getenv("BIFROST_ADMIN_API_KEY", "").strip() or None,
-            **{("auth_provider" if k == "provider" else "entra_user_map" if k == "user_map" else "entra_tenant_id" if k == "tenant_id" else f"auth_{k}"): v
+            **{("auth_provider" if k == "provider" else "entra_user_map" if k == "user_map" else "entra_tenant_id" if k == "tenant_id" else k if k.startswith("ping_") else f"auth_{k}"): v
                for k, v in auth_config.items()},
         )

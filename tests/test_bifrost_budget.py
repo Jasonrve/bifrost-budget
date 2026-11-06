@@ -88,7 +88,7 @@ def test_main_emits_service_version_without_sensitive_configuration(
     assert '"build_id":"abc123deadbeef"' in log_text
     assert "admin-secret" not in log_text
     assert "Authorization" not in log_text
-    assert __version__ == "0.5.1"
+    assert __version__ == "0.5.2"
 
 
 def test_service_version_uses_unknown_for_missing_metadata_and_invalid_build_id(
@@ -546,7 +546,7 @@ async def test_user_usage_diagnostics_expose_query_shape_without_search_value(ca
 
 
 @pytest.mark.asyncio
-async def test_user_usage_returns_empty_for_malformed_budget_entries() -> None:
+async def test_user_usage_rejects_malformed_budget_entries() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"users": [{
             "name": "alice",
@@ -556,12 +556,11 @@ async def test_user_usage_returns_empty_for_malformed_budget_entries() -> None:
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://bifrost.example.com")
     try:
         bifrost = BifrostClient(BifrostSettings(api_base_url="https://bifrost.example.com"), client=client)
-        report = await bifrost.fetch_user_usage(admin_api_key="admin-secret", user_identifier="alice")
+        with pytest.raises(ToolError, match="budget row is malformed"):
+            await bifrost.fetch_user_usage(admin_api_key="admin-secret", user_identifier="alice")
     finally:
         await client.aclose()
 
-    assert report["budgets"] == []
-    assert report["summary"]["budget_count"] == 0
 
 
 @pytest.mark.asyncio

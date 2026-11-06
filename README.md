@@ -77,9 +77,13 @@ Authorization uses validated immutable `(tid, oid)`. Set `BIFROST_ENTRA_USER_MAP
 
 ### Explicit Ping migration mode
 
-Set `BIFROST_AUTH_PROVIDER=ping` and explicitly configure `BIFROST_PING_ISSUER`, `BIFROST_PING_AUDIENCE`, `BIFROST_PING_DISCOVERY_URL`, `BIFROST_PING_JWKS_URL`, `BIFROST_PING_SCOPE`, and `BIFROST_USERINFO_URL`. Ping has no endpoint defaults and startup fails until every value is supplied. After JWT validation, lookup prefers token `displayname`, then trusted UserInfo response `name`, then `preferred_username`. UserInfo must carry the same `sub` as the validated token. Its URL must be HTTPS without credentials, query, or fragment; redirects are disabled. Legacy name matching must uniquely identify one governance user. The endpoint is `/userinfo`, not `/clientinfo`. Entra remains the default provider and does not need a UserInfo URL.
+Set `BIFROST_AUTH_PROVIDER=ping` and explicitly configure `BIFROST_PING_ISSUER`, `BIFROST_PING_AUDIENCE`, `BIFROST_PING_DISCOVERY_URL`, `BIFROST_PING_JWKS_URL`, `BIFROST_PING_SCOPE`, `BIFROST_USERINFO_URL`, `BIFROST_PING_DELEGATED_CLAIM`, and `BIFROST_PING_DELEGATED_VALUE`. Ping has no endpoint or delegation-marker defaults and startup fails until every value is supplied.
+
+The marker is a signed top-level string claim with an exact configured nonempty string value. It represents a trusted issuer issuance-policy contract: operators must verify that the issuer reserves that claim/value exclusively for delegated human users and configure the actual claim and value. There is no production mapping or suggested claim/value. Do not use `displayname`, `name`, `scope`, `scp`, `sub`, `client_id`, `aud`, `iss`, or another identity/protocol claim as the marker. The subject must be a nonempty immutable human-user subject in the issuer namespace, not a client identity. Known client-credentials grant indicators, explicit `idtyp=app`, and `sub == client_id` are rejected even when the marker matches. Missing, ambiguous, non-string, list, boolean, or wrong marker values fail closed; scope, display claims, and UserInfo alone do not establish delegation. After the contract passes, lookup prefers token `displayname`, then trusted UserInfo response `name`, then `preferred_username`. UserInfo must carry the same `sub` as the validated token. Its URL must be HTTPS without credentials, query, or fragment; redirects are disabled. Legacy name matching must uniquely identify one governance user. The endpoint is `/userinfo`, not `/clientinfo`. Entra remains the default provider and does not need a UserInfo URL or marker configuration.
 
 The governance request always uses `BIFROST_ADMIN_API_KEY`, never the inbound bearer. The tool cannot redirect the configured Bifrost backend. Entra uses exact mapped-ID matching; Ping uses its documented legacy name match. Virtual-key fallback inputs are not part of the production flow.
+
+Governance usage extraction requires `access_profiles` and each profile's `budgets` field to be lists when present, and every profile entry to be an object. Omitted fields are treated as empty for compatibility; explicit `null` or other malformed container values fail the request. Empty lists are valid.
 
 The `get_quota` response contains budget rows and a summary. Monetary fields `current_usage`, `max_limit`, and `remaining` are dollar amounts represented as JSON numbers with two decimal places. `remaining` is calculated as `max_limit - current_usage` using Decimal `ROUND_HALF_UP` arithmetic. Missing or malformed monetary input produces an explicit error.
 
@@ -89,7 +93,7 @@ Structured JSON logs contain safe event, status, host/path, count, duration, and
 
 ## Immutable container usage
 
-Build locally with `docker build -t bifrost-budget:0.5.1 .`. The image runs as UID/GID 10001, drops Linux capabilities, and is designed for a read-only root filesystem. In production, use the immutable commit SHA or release tag published by CI rather than `latest`. Push and pull request CI run checks without publishing. Platform publishes only through `workflow_dispatch` with `publish_release=true`. CI derives the release tag from `pyproject.toml` and refuses to publish if that semantic version already exists in GHCR; SHA, semantic version, and `latest` tags publish together:
+Build locally with `docker build -t bifrost-budget:0.5.2 .`. The image runs as UID/GID 10001, drops Linux capabilities, and is designed for a read-only root filesystem. In production, use the immutable commit SHA or release tag published by CI rather than `latest`. Push and pull request CI run checks without publishing. Platform publishes only through `workflow_dispatch` with `publish_release=true`. CI derives the release tag from `pyproject.toml` and refuses to publish if that semantic version already exists in GHCR; SHA, semantic version, and `latest` tags publish together:
 
 ```bash
 docker run --read-only --user 10001:10001 -p 8080:8080 \
@@ -104,13 +108,13 @@ docker run --read-only --user 10001:10001 -p 8080:8080 \
 ```bash
 helm upgrade --install bifrost-budget charts/bifrost-budget \
   --namespace bifrost-budget --create-namespace \
-  --set image.tag=0.5.1 \
+  --set image.tag=0.5.2 \
   --set env.apiBaseUrl=https://bifrost.example.com \
   --set env.adminApiKey.existingSecret=bifrost-budget-admin
 ```
 
 Pin `image.tag` to a reviewed release or commit SHA. The chart enables non-root execution, drops all capabilities, disables privilege escalation, and uses read-only root storage by default.
-Supply the operator's Entra settings through chart values (`env.entraTenantId`, `env.entraAudience`, `env.entraScope`, `env.entraIssuer`, `env.entraDiscoveryUrl`, `env.entraJwksUrl`, and `env.entraUserMap`) or Ping settings when explicitly migrating. Defaults intentionally leave required values empty so pods fail closed until configured. Use the Bifrost backend's actual IDs; do not use the placeholders above.
+Supply the operator's Entra settings through chart values (`env.entraTenantId`, `env.entraAudience`, `env.entraScope`, `env.entraIssuer`, `env.entraDiscoveryUrl`, `env.entraJwksUrl`, and `env.entraUserMap`) or Ping settings when explicitly migrating, including `env.pingDelegatedClaim` and `env.pingDelegatedValue` after verifying the issuer issuance policy. Defaults intentionally leave required values empty so pods fail closed until configured. Use the Bifrost backend's actual IDs; do not use the placeholders above.
 
 ## Development
 

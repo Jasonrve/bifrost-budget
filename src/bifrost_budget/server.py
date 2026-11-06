@@ -14,7 +14,7 @@ from starlette.responses import JSONResponse, Response
 from .client import BifrostClient
 from .auth import AuthenticationError, KeyCache, TokenVerifier
 from .logging import fingerprint_value, log_event
-from .settings import BifrostSettings
+from .settings import BifrostSettings, validate_ping_delegation_contract
 
 SERVER_NAME = "bifrost-budget"
 SERVER_INSTRUCTIONS = (
@@ -27,7 +27,7 @@ def create_server() -> FastMCP:
     server = FastMCP(
         name=SERVER_NAME,
         instructions=SERVER_INSTRUCTIONS,
-        version="0.5.1",
+        version="0.5.2",
     )
     key_caches: dict[tuple[str, str, str, str], KeyCache] = {}
 
@@ -125,9 +125,9 @@ def create_server() -> FastMCP:
 
 
 def _validated_identity(claims: dict[str, Any], settings: BifrostSettings) -> tuple[str, str]:
-    if claims.get("idtyp") == "app":
-        raise AuthenticationError("app_only_unsupported")
     if settings.auth_provider == "entra":
+        if claims.get("idtyp") == "app":
+            raise AuthenticationError("app_only_unsupported")
         import uuid
         if claims.get("ver") != "2.0" or not isinstance(claims.get("scp"), str) or settings.auth_scope not in claims["scp"].split():
             raise AuthenticationError("delegated_scope_required")
@@ -145,6 +145,29 @@ def _validated_identity(claims: dict[str, Any], settings: BifrostSettings) -> tu
         if key not in mapping:
             raise AuthenticationError("user_mapping_missing")
         return mapping[key], "entra_tid_oid_mapping"
+    for field in ("idtyp", "gty", "grant_type"):
+        indicator = claims.get(field)
+        if field in claims and not isinstance(indicator, str):
+            raise AuthenticationError("ambiguous_client_indicator")
+        if field == "idtyp" and isinstance(indicator, str) and indicator.strip().lower() == "app":
+            raise AuthenticationError("app_only_unsupported")
+        if field in {"gty", "grant_type"} and isinstance(indicator, str) and indicator.strip().lower().replace("_", "-") == "client-credentials":
+            raise AuthenticationError("app_only_unsupported")
+    delegated_claim = settings.ping_delegated_claim
+    delegated_value = settings.ping_delegated_value
+    try:
+        validate_ping_delegation_contract(delegated_claim, delegated_value)
+    except ValueError:
+        raise AuthenticationError("delegation_contract_invalid") from None
+    marker = claims.get(delegated_claim)
+    if not isinstance(marker, str) or marker != delegated_value:
+        raise AuthenticationError("delegation_marker_invalid")
+    subject = claims.get("sub")
+    if not isinstance(subject, str) or not subject.strip():
+        raise AuthenticationError("invalid_user_subject")
+    client_id = claims.get("client_id")
+    if isinstance(client_id, str) and client_id == subject:
+        raise AuthenticationError("app_only_unsupported")
     if settings.auth_scope and (not isinstance(claims.get("scope", claims.get("scp")), str) or settings.auth_scope not in claims.get("scope", claims.get("scp", "")).split()):
         raise AuthenticationError("delegated_scope_required")
     display = claims.get("displayname")
