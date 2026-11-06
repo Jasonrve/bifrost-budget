@@ -77,7 +77,7 @@ Authorization uses validated immutable `(tid, oid)`. Set `BIFROST_ENTRA_USER_MAP
 
 ### Explicit Ping migration mode
 
-Set `BIFROST_AUTH_PROVIDER=ping` and configure `BIFROST_PING_ISSUER`, `BIFROST_PING_AUDIENCE`, `BIFROST_PING_DISCOVERY_URL`, and `BIFROST_PING_JWKS_URL`; require `BIFROST_PING_SCOPE` for the delegated permission. After JWT validation, lookup prefers token `displayname`, then trusted `BIFROST_USERINFO_URL` response `name`, then `preferred_username`. UserInfo must carry the same `sub` as the validated token. Its URL must be HTTPS without credentials, query, or fragment; redirects are disabled. Legacy name matching must uniquely identify one governance user. The endpoint is `/userinfo`, not `/clientinfo`.
+Set `BIFROST_AUTH_PROVIDER=ping` and explicitly configure `BIFROST_PING_ISSUER`, `BIFROST_PING_AUDIENCE`, `BIFROST_PING_DISCOVERY_URL`, `BIFROST_PING_JWKS_URL`, `BIFROST_PING_SCOPE`, and `BIFROST_USERINFO_URL`. Ping has no endpoint defaults and startup fails until every value is supplied. After JWT validation, lookup prefers token `displayname`, then trusted UserInfo response `name`, then `preferred_username`. UserInfo must carry the same `sub` as the validated token. Its URL must be HTTPS without credentials, query, or fragment; redirects are disabled. Legacy name matching must uniquely identify one governance user. The endpoint is `/userinfo`, not `/clientinfo`. Entra remains the default provider and does not need a UserInfo URL.
 
 The governance request always uses `BIFROST_ADMIN_API_KEY`, never the inbound bearer. The tool cannot redirect the configured Bifrost backend. Entra uses exact mapped-ID matching; Ping uses its documented legacy name match. Virtual-key fallback inputs are not part of the production flow.
 

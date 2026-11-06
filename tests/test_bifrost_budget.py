@@ -29,7 +29,7 @@ from bifrost_budget import __version__
 from bifrost_budget.__main__ import main
 from bifrost_budget.normalization import normalize_quota_payload
 from bifrost_budget.server import create_server
-from bifrost_budget.settings import BifrostSettings, DEFAULT_USERINFO_URL
+from bifrost_budget.settings import BifrostSettings
 
 
 @pytest.fixture(autouse=True)
@@ -325,12 +325,20 @@ async def test_userinfo_rejects_invalid_username(payload: dict[str, object], rea
 
 
 @pytest.mark.asyncio
-async def test_userinfo_uses_safe_default_url() -> None:
+async def test_userinfo_url_defaults_to_empty_for_entra() -> None:
     settings = BifrostSettings.from_env(api_base_url="https://bifrost.example.com")
-    assert settings.userinfo_url == DEFAULT_USERINFO_URL
-    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, json={}))) as client:
-        with pytest.raises(ToolError, match="UserInfo"):
-            await BifrostClient(settings, client=client).fetch_userinfo_identity(authorization="Bearer token", expected_subject="subject")
+    assert settings.auth_provider == "entra"
+    assert settings.userinfo_url == ""
+    requests = []
+    def response(request):
+        requests.append(request)
+        return httpx.Response(200, json={})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as client:
+        with pytest.raises(ToolError, match="UserInfo|USERINFO"):
+            await BifrostClient(settings, client=client).fetch_userinfo_identity(
+                authorization="Bearer token", expected_subject="subject"
+            )
+    assert requests == []
 
 
 def test_userinfo_url_can_be_overridden_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:

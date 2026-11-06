@@ -334,10 +334,13 @@ def test_provider_configuration_fails_closed_and_ping_requires_explicit_scope(mo
     monkeypatch.setenv("BIFROST_PING_AUDIENCE", AUDIENCE)
     monkeypatch.setenv("BIFROST_PING_DISCOVERY_URL", DISCOVERY)
     monkeypatch.setenv("BIFROST_PING_JWKS_URL", JWKS)
-    monkeypatch.setenv("BIFROST_USERINFO_URL", "https://ping.example.test/userinfo")
+    monkeypatch.delenv("BIFROST_USERINFO_URL", raising=False)
     with pytest.raises(ValueError, match="delegated scope"):
         BifrostSettings.from_env()
     monkeypatch.setenv("BIFROST_PING_SCOPE", "quota.read")
+    with pytest.raises(ValueError, match="BIFROST_USERINFO_URL"):
+        BifrostSettings.from_env()
+    monkeypatch.setenv("BIFROST_USERINFO_URL", "https://ping.example.test/userinfo")
     settings = BifrostSettings.from_env()
     assert settings.auth_provider == "ping"
     assert settings.auth_scope == "quota.read"

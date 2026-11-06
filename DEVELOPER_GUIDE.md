@@ -19,7 +19,9 @@ pytest -q
 
 Set `BIFROST_API_BASE_URL` for a local run. Do not use real credentials in tests or local logs. The server defaults to Streamable HTTP on `0.0.0.0:8080`, with `/healthz` and `/mcp`. Authenticated `get_quota` requires Streamable HTTP to receive the caller's bearer header; stdio cannot authenticate this tool.
 
-Authentication defaults to Entra and requires tenant, API audience, delegated scope, trusted issuer/discovery/JWKS URLs, and an administrator-managed `(tid,oid) -> exact Bifrost user ID` map. See README for the Entra registration and consent flow. `BIFROST_AUTH_PROVIDER=ping` enables only explicitly configured, JWT-verified Ping migration. UserInfo uses `/userinfo`, not `/clientinfo`, and is subject-bound to the validated token. No Graph API audience or secret is needed by this server. App-only tokens are unsupported. Tool-supplied `api_base_url` is accepted only when it exactly matches the configured backend.
+Authentication defaults to Entra and requires tenant, API audience, delegated scope, trusted issuer/discovery/JWKS URLs, and an administrator-managed `(tid,oid) -> exact Bifrost user ID` map. See README for the Entra registration and consent flow. `BIFROST_AUTH_PROVIDER=ping` enables only explicitly configured, JWT-verified Ping migration. Configure all Ping issuer, audience, discovery, JWKS, scope, and UserInfo settings; no Ping endpoint is supplied by default. UserInfo uses `/userinfo`, not `/clientinfo`, and is subject-bound to the validated token. No Graph API audience or secret is needed by this server. App-only tokens are unsupported. Tool-supplied `api_base_url` is accepted only when it exactly matches the configured backend.
+
+After the planned repository history rewrite, collaborators should discard old local clones and create a fresh clone from the rewritten repository. Reapply only reviewed, needed work on top of the new history; do not merge old-history branches into it.
 
 ## Tests and quality gates
 

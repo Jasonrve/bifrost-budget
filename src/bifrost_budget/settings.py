@@ -10,7 +10,7 @@ from urllib.parse import parse_qsl, urlsplit
 DEFAULT_API_BASE_URL = ""
 DEFAULT_QUOTA_PATH = "/api/governance/virtual-keys/quota"
 DEFAULT_USERS_PATH = "/api/governance/users?limit=20"
-DEFAULT_USERINFO_URL = "https://identity.example.invalid/as/userinfo"
+DEFAULT_USERINFO_URL = ""
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_HTTP_PORT = 8080
 DEFAULT_MCP_PATH = "/mcp"
@@ -70,8 +70,6 @@ def _auth_config() -> dict[str, object]:
     scope = os.getenv("BIFROST_PING_SCOPE", "").strip()
     if not all((issuer, audience, discovery, jwks, scope)) or any(char.isspace() for char in scope):
         raise ValueError("Ping requires issuer, audience, discovery, JWKS, and delegated scope configuration")
-    if not os.getenv("BIFROST_USERINFO_URL", "").strip():
-        raise ValueError("Ping requires BIFROST_USERINFO_URL for its configured legacy UserInfo fallback")
     from .auth import _https
     if not all(_https(x) for x in (issuer, discovery, jwks)):
         raise ValueError("Ping issuer, discovery, and JWKS URLs must use HTTPS")
@@ -160,14 +158,17 @@ class BifrostSettings:
                 or any(key != "limit" or value != "20" for key, value in parse_qsl(users_parts.query, keep_blank_values=True))
                 or len(parse_qsl(users_parts.query, keep_blank_values=True)) > 1):
             raise ValueError("BIFROST_USERS_PATH must be /api/governance/users with optional limit=20")
+        auth_config = _auth_config()
+        resolved_userinfo_url = (userinfo_url if userinfo_url is not None else os.getenv("BIFROST_USERINFO_URL", "")).strip()
+        if auth_config["provider"] == "ping" and not resolved_userinfo_url:
+            raise ValueError("Ping requires BIFROST_USERINFO_URL for its configured legacy UserInfo fallback")
+        if resolved_userinfo_url:
+            resolved_userinfo_url = validate_userinfo_url(resolved_userinfo_url)
         return cls(
             api_base_url=resolved_api_base_url,
             quota_path=resolved_quota_path,
             users_path=resolved_users_path,
-            userinfo_url=validate_userinfo_url(
-                (userinfo_url or os.getenv("BIFROST_USERINFO_URL", DEFAULT_USERINFO_URL)).strip()
-                or DEFAULT_USERINFO_URL
-            ),
+            userinfo_url=resolved_userinfo_url,
             timeout_seconds=float(timeout_seconds or os.getenv("BIFROST_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS)),
             transport=transport_value,
             host=(host or os.getenv("BIFROST_HOST", DEFAULT_HOST)).strip() or DEFAULT_HOST,
@@ -175,5 +176,5 @@ class BifrostSettings:
             mcp_path=(mcp_path or os.getenv("BIFROST_MCP_PATH", DEFAULT_MCP_PATH)).strip() or DEFAULT_MCP_PATH,
             admin_api_key=os.getenv("BIFROST_ADMIN_API_KEY", "").strip() or None,
             **{("auth_provider" if k == "provider" else "entra_user_map" if k == "user_map" else "entra_tenant_id" if k == "tenant_id" else f"auth_{k}"): v
-               for k, v in _auth_config().items()},
+               for k, v in auth_config.items()},
         )
