@@ -27,7 +27,7 @@ def create_server() -> FastMCP:
     server = FastMCP(
         name=SERVER_NAME,
         instructions=SERVER_INSTRUCTIONS,
-        version="0.5.0",
+        version="0.5.1",
     )
     key_caches: dict[tuple[str, str, str, str], KeyCache] = {}
 

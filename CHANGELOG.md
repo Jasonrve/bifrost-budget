@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1
+
+- Publish a fresh immutable container from the sanitized canonical history; keep existing published versions unchanged.
+- Synchronize package, server, container and chart release metadata. Entra remains the default; Ping requires explicit trusted provider and UserInfo configuration.
+
 ## 0.5.0
 
 Security migration requiring new deployment configuration:
