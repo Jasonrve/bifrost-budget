@@ -30,6 +30,14 @@ def test_ci_checks_registry_before_publishing_semantic_tag() -> None:
     assert "tomllib.load(pyproject)[\"project\"][\"version\"]" in workflow
     assert 'docker manifest inspect "ghcr.io/jasonrve/bifrost-budget:${VERSION}"' in workflow
     assert "Refusing to publish existing release tag ${VERSION}" in workflow
+    assert "publish_release" in workflow
+    assert "workflow_dispatch" in workflow
     assert "Commit SHA and latest are intentionally mutable/rolling tags" in workflow
-    assert workflow.index("Refuse existing release image tag") < workflow.index("Build image")
+    docker_job = workflow[workflow.index("\n  docker:"):workflow.index("\n  release:")]
+    release_job = workflow[workflow.index("\n  release:"):]
+    assert "push: false" in docker_job
+    assert "packages: write" not in docker_job
+    assert "github.ref == 'refs/heads/main'" in release_job
+    assert release_job.index("Refuse existing release image tag") < release_job.index("Build and publish release image")
+    assert "push: true" in release_job
     assert "force" not in workflow.lower()

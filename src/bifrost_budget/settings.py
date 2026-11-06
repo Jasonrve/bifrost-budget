@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import json
+import re
 from dataclasses import dataclass
 from typing import Literal, cast
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 DEFAULT_API_BASE_URL = ""
 DEFAULT_QUOTA_PATH = "/api/governance/virtual-keys/quota"
@@ -14,6 +16,67 @@ DEFAULT_HTTP_PORT = 8080
 DEFAULT_MCP_PATH = "/mcp"
 DEFAULT_TIMEOUT_SECONDS = 15.0
 DEFAULT_TRANSPORT: Literal["streamable-http", "stdio"] = "streamable-http"
+DEFAULT_AUTH_PROVIDER = "entra"
+
+
+def _auth_config() -> dict[str, object]:
+    provider = os.getenv("BIFROST_AUTH_PROVIDER", DEFAULT_AUTH_PROVIDER).strip().lower()
+    if provider not in {"entra", "ping"}:
+        raise ValueError("BIFROST_AUTH_PROVIDER must be 'entra' or 'ping'")
+    if provider == "entra":
+        tenant = os.getenv("BIFROST_ENTRA_TENANT_ID", "").strip().lower()
+        audience = os.getenv("BIFROST_ENTRA_AUDIENCE", "").strip()
+        scope = os.getenv("BIFROST_ENTRA_SCOPE", "").strip()
+        if (not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", tenant)
+                or not re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}", audience)
+                or not scope or any(char.isspace() for char in scope)):
+            raise ValueError("Entra requires BIFROST_ENTRA_TENANT_ID, BIFROST_ENTRA_AUDIENCE, and BIFROST_ENTRA_SCOPE")
+        issuer = os.getenv("BIFROST_ENTRA_ISSUER", "").strip() or f"https://login.microsoftonline.com/{tenant}/v2.0"
+        discovery = os.getenv("BIFROST_ENTRA_DISCOVERY_URL", "").strip() or f"https://login.microsoftonline.com/{tenant}/v2.0/.well-known/openid-configuration"
+        jwks = os.getenv("BIFROST_ENTRA_JWKS_URL", "").strip()
+        mapping = os.getenv("BIFROST_ENTRA_USER_MAP", "").strip()
+        if not jwks or not mapping:
+            raise ValueError("Entra requires BIFROST_ENTRA_JWKS_URL and BIFROST_ENTRA_USER_MAP")
+        try:
+            def unique_pairs(items: list[tuple[str, object]]) -> dict[str, object]:
+                result: dict[str, object] = {}
+                for key, value in items:
+                    if key in result:
+                        raise ValueError("duplicate_map_key")
+                    result[key] = value
+                return result
+            parsed = json.loads(mapping, object_pairs_hook=unique_pairs)
+        except ValueError as exc:
+            raise ValueError("BIFROST_ENTRA_USER_MAP must be a JSON object mapping tid:oid to exact Bifrost user IDs") from exc
+        guid = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}"
+        if not isinstance(parsed, dict) or not parsed or any(
+            not isinstance(k, str) or not re.fullmatch(guid + ":" + guid, k)
+            or not isinstance(v, str) or not v.strip() or v != v.strip() for k, v in parsed.items()
+        ):
+            raise ValueError("BIFROST_ENTRA_USER_MAP must map tid:oid keys to non-empty Bifrost user IDs")
+        normalized_map = {key.lower(): value for key, value in parsed.items()}
+        if len(normalized_map) != len(parsed):
+            raise ValueError("BIFROST_ENTRA_USER_MAP contains duplicate tenant/user keys")
+        parsed = normalized_map
+        from .auth import _https
+        if not all(_https(x) for x in (issuer, discovery, jwks)):
+            raise ValueError("Entra issuer, discovery, and JWKS URLs must use HTTPS")
+        return {"provider": provider, "tenant_id": tenant, "issuer": issuer, "discovery_url": discovery, "jwks_url": jwks,
+                "audience": audience, "scope": scope, "user_map": parsed}
+    issuer = os.getenv("BIFROST_PING_ISSUER", "").strip()
+    audience = os.getenv("BIFROST_PING_AUDIENCE", "").strip()
+    discovery = os.getenv("BIFROST_PING_DISCOVERY_URL", "").strip()
+    jwks = os.getenv("BIFROST_PING_JWKS_URL", "").strip()
+    scope = os.getenv("BIFROST_PING_SCOPE", "").strip()
+    if not all((issuer, audience, discovery, jwks, scope)) or any(char.isspace() for char in scope):
+        raise ValueError("Ping requires issuer, audience, discovery, JWKS, and delegated scope configuration")
+    if not os.getenv("BIFROST_USERINFO_URL", "").strip():
+        raise ValueError("Ping requires BIFROST_USERINFO_URL for its configured legacy UserInfo fallback")
+    from .auth import _https
+    if not all(_https(x) for x in (issuer, discovery, jwks)):
+        raise ValueError("Ping issuer, discovery, and JWKS URLs must use HTTPS")
+    return {"provider": provider, "issuer": issuer, "discovery_url": discovery, "jwks_url": jwks,
+            "audience": audience, "scope": scope, "user_map": {}}
 
 
 def validate_userinfo_url(url: str) -> str:
@@ -39,8 +102,15 @@ class BifrostSettings:
     host: str = DEFAULT_HOST
     port: int = DEFAULT_HTTP_PORT
     mcp_path: str = DEFAULT_MCP_PATH
-    default_virtual_key: str | None = None
     admin_api_key: str | None = None
+    auth_provider: str = "entra"
+    entra_tenant_id: str = ""
+    auth_issuer: str = ""
+    auth_discovery_url: str = ""
+    auth_jwks_url: str = ""
+    auth_audience: str = ""
+    auth_scope: str = ""
+    entra_user_map: dict[str, str] | None = None
 
     @property
     def quota_url(self) -> str:
@@ -68,18 +138,32 @@ class BifrostSettings:
             raise ValueError(
                 "BIFROST_API_BASE_URL must be configured (for example https://bifrost.example.com)"
             )
+        parts = urlsplit(resolved_api_base_url)
+        local_http = parts.scheme == "http" and parts.hostname in {"localhost", "127.0.0.1", "::1"}
+        if (parts.scheme != "https" and not local_http) or not parts.hostname or parts.username or parts.password or parts.query or parts.fragment:
+            raise ValueError("BIFROST_API_BASE_URL must be HTTPS without credentials, query, or fragment")
 
         resolved_transport = transport or os.getenv("BIFROST_TRANSPORT", DEFAULT_TRANSPORT)
         if resolved_transport not in {"streamable-http", "stdio"}:
             raise ValueError("BIFROST_TRANSPORT must be 'streamable-http' or 'stdio'")
 
         transport_value = cast(Literal["streamable-http", "stdio"], resolved_transport)
-        resolved_default_virtual_key = os.getenv("BIFROST_VIRTUAL_KEY", "").strip() or None
-
+        resolved_quota_path = (quota_path or os.getenv("BIFROST_QUOTA_PATH", DEFAULT_QUOTA_PATH)).strip() or DEFAULT_QUOTA_PATH
+        resolved_users_path = os.getenv("BIFROST_USERS_PATH", DEFAULT_USERS_PATH).strip() or DEFAULT_USERS_PATH
+        quota_parts = urlsplit(resolved_quota_path)
+        users_parts = urlsplit(resolved_users_path)
+        if (quota_parts.scheme or quota_parts.netloc or quota_parts.path != DEFAULT_QUOTA_PATH
+                or quota_parts.query or quota_parts.fragment or ".." in quota_parts.path.split("/")):
+            raise ValueError("BIFROST_QUOTA_PATH must be /api/governance/virtual-keys/quota")
+        if (users_parts.scheme or users_parts.netloc or users_parts.path != "/api/governance/users"
+                or users_parts.fragment or ".." in users_parts.path.split("/")
+                or any(key != "limit" or value != "20" for key, value in parse_qsl(users_parts.query, keep_blank_values=True))
+                or len(parse_qsl(users_parts.query, keep_blank_values=True)) > 1):
+            raise ValueError("BIFROST_USERS_PATH must be /api/governance/users with optional limit=20")
         return cls(
             api_base_url=resolved_api_base_url,
-            quota_path=(quota_path or os.getenv("BIFROST_QUOTA_PATH", DEFAULT_QUOTA_PATH)).strip() or DEFAULT_QUOTA_PATH,
-            users_path=os.getenv("BIFROST_USERS_PATH", DEFAULT_USERS_PATH).strip() or DEFAULT_USERS_PATH,
+            quota_path=resolved_quota_path,
+            users_path=resolved_users_path,
             userinfo_url=validate_userinfo_url(
                 (userinfo_url or os.getenv("BIFROST_USERINFO_URL", DEFAULT_USERINFO_URL)).strip()
                 or DEFAULT_USERINFO_URL
@@ -89,6 +173,7 @@ class BifrostSettings:
             host=(host or os.getenv("BIFROST_HOST", DEFAULT_HOST)).strip() or DEFAULT_HOST,
             port=int(port or os.getenv("BIFROST_PORT", DEFAULT_HTTP_PORT)),
             mcp_path=(mcp_path or os.getenv("BIFROST_MCP_PATH", DEFAULT_MCP_PATH)).strip() or DEFAULT_MCP_PATH,
-            default_virtual_key=resolved_default_virtual_key,
             admin_api_key=os.getenv("BIFROST_ADMIN_API_KEY", "").strip() or None,
+            **{("auth_provider" if k == "provider" else "entra_user_map" if k == "user_map" else "entra_tenant_id" if k == "tenant_id" else f"auth_{k}"): v
+               for k, v in _auth_config().items()},
         )

@@ -4,7 +4,7 @@
 
 Built on [FastMCP](https://gofastmcp.com). `src/bifrost_budget/server.py` owns the `get_quota` tool and `/healthz` route. `client.py` contains asynchronous HTTP calls and authentication separation. `normalization.py` converts governance budgets to the stable response model in `models.py`; `settings.py` validates environment configuration. `logging.py` provides structured, value-free diagnostics.
 
-The production path is intentionally two-legged: the inbound PingIdentity bearer identifies the caller and is used only for UserInfo fallback; `BIFROST_ADMIN_API_KEY` authenticates governance lookup. Never substitute one for the other.
+The production path verifies a delegated-user bearer using the configured Entra provider (default) or explicitly selected Ping provider. `BIFROST_ADMIN_API_KEY` authenticates governance lookup. Never substitute one for the other.
 
 ## Local development
 
@@ -17,13 +17,13 @@ uv pip install -e '.[dev]'
 pytest -q
 ```
 
-Set `BIFROST_API_BASE_URL` for a local run. Do not use real credentials in tests or local logs. The server defaults to Streamable HTTP on `0.0.0.0:8080`, with `/healthz` and `/mcp`; use `BIFROST_TRANSPORT=stdio` when required by an MCP client.
+Set `BIFROST_API_BASE_URL` for a local run. Do not use real credentials in tests or local logs. The server defaults to Streamable HTTP on `0.0.0.0:8080`, with `/healthz` and `/mcp`. Authenticated `get_quota` requires Streamable HTTP to receive the caller's bearer header; stdio cannot authenticate this tool.
 
-`BIFROST_USERINFO_URL` overrides the PingIdentity UserInfo endpoint and defaults to `https://identity.example.invalid/as/userinfo`. It must be an absolute HTTPS URL with no userinfo credentials, query string, or fragment. Helm exposes the same setting as `env.userinfoUrl`; leave it at its default or set it per environment.
+Authentication defaults to Entra and requires tenant, API audience, delegated scope, trusted issuer/discovery/JWKS URLs, and an administrator-managed `(tid,oid) -> exact Bifrost user ID` map. See README for the Entra registration and consent flow. `BIFROST_AUTH_PROVIDER=ping` enables only explicitly configured, JWT-verified Ping migration. UserInfo uses `/userinfo`, not `/clientinfo`, and is subject-bound to the validated token. No Graph API audience or secret is needed by this server. App-only tokens are unsupported. Tool-supplied `api_base_url` is accepted only when it exactly matches the configured backend.
 
 ## Tests and quality gates
 
-The test suite covers identity precedence, URL encoding, auth separation, malformed input, Decimal half-up arithmetic, response fields, structured log redaction, and MCP/health behavior. Run `pytest -q` before committing. Run `helm lint charts/bifrost-budget` and, when Docker is available, build the image and verify its configured user with `docker inspect`.
+The test suite uses locally generated signing keys and mocked discovery, JWKS, identity, and Bifrost HTTP responses. It does not contact a live tenant or backend and must not use live credentials. It covers identity resolution, auth separation, malformed input, Decimal arithmetic, structured log redaction, and MCP/health behavior. Run `pytest -q`; run `helm lint charts/bifrost-budget` and, when Docker is available, build the image and verify its configured user with `docker inspect`.
 
 ## Dependency updates
 
@@ -43,13 +43,13 @@ Logs are JSON events, not request dumps. Allowed diagnostics are event names, st
 
 ### Log levels
 
-`BIFROST_LOG_LEVEL` (default `INFO`) controls verbosity. At the default level, a `get_quota` call produces exactly one line: `get_quota_completed` on success or `tool_error` on failure, each with `auth_source`, `duration_ms`, and a correlation fingerprint. Every intermediate step — credential resolution, the upstream quota/governance/UserInfo requests and responses, identity matching — is logged at `DEBUG` with full detail, so nothing is lost; it's just quiet until you ask for it. Error events (`upstream_quota_error`, `userinfo_error`, `auth_source_missing`) always log at `ERROR` regardless of the configured level. Set `BIFROST_LOG_LEVEL=DEBUG` to see the full per-request trace when troubleshooting.
+`BIFROST_LOG_LEVEL` controls verbosity. Logs contain safe event, status, host/path, count, duration, and reason-code metadata only. They never contain tokens, identities, PII, secrets, query values, response bodies, or unvalidated claim values at any level.
 
 ## Release and build workflow
 
-The package version in `pyproject.toml` is canonical. Keep `src/bifrost_budget/__init__.py`, the MCP server metadata, `Dockerfile` default argument, and Helm `Chart.yaml`/default image tag synchronized. CI derives the image version from `pyproject.toml`, runs tests and Helm lint, then publishes multi-architecture images tagged with the commit SHA, semantic version, and `latest`. Prefer the immutable SHA or release tag in deployments; never rely on `latest` for production.
+The package version in `pyproject.toml` is canonical. Keep `src/bifrost_budget/__init__.py`, the MCP server metadata, `Dockerfile` default argument, and Helm `Chart.yaml`/default image tag synchronized. Push and pull request workflows run tests and Helm lint without publishing an image. Platform publishes by manually dispatching the workflow with `publish_release=true`; that run checks the immutable semantic tag before publishing multi-architecture SHA, semantic version, and `latest` tags. Prefer an immutable SHA or release tag in deployments.
 
-Before a release, run tests, lock checks, Helm lint, a Docker build, and inspect the diff for secrets. Commit with author `Jasonrve <jasonrve@gmail.com>` and push to `main` only after the checks pass.
+Before a release, run tests, lock checks, Helm lint, a Docker build, and inspect the diff for secrets. Platform triggers release publication by dispatching the workflow from `main` with `publish_release=true`; ordinary pushes only run checks and builds.
 
 ## Contributions
 

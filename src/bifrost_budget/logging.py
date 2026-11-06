@@ -45,6 +45,10 @@ def configure_logging(level: str | None = None) -> logging.Logger:
     logging.basicConfig(level=resolved_level, format="%(message)s")
     logger = logging.getLogger(LOGGER_NAME)
     logger.setLevel(resolved_level)
+    # httpx INFO includes complete request URLs (including query searches), and
+    # httpcore DEBUG includes outbound headers. Keep those below application logs.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     return logger
 
 

@@ -44,19 +44,35 @@ spec:
               value: {{ .Values.env.timeoutSeconds | quote }}
             - name: BIFROST_API_BASE_URL
               value: {{ required "env.apiBaseUrl is required" .Values.env.apiBaseUrl | quote }}
+            - name: BIFROST_AUTH_PROVIDER
+              value: {{ .Values.env.authProvider | quote }}
+            - name: BIFROST_ENTRA_TENANT_ID
+              value: {{ .Values.env.entraTenantId | quote }}
+            - name: BIFROST_ENTRA_AUDIENCE
+              value: {{ .Values.env.entraAudience | quote }}
+            - name: BIFROST_ENTRA_SCOPE
+              value: {{ .Values.env.entraScope | quote }}
+            - name: BIFROST_ENTRA_ISSUER
+              value: {{ .Values.env.entraIssuer | quote }}
+            - name: BIFROST_ENTRA_DISCOVERY_URL
+              value: {{ .Values.env.entraDiscoveryUrl | quote }}
+            - name: BIFROST_ENTRA_JWKS_URL
+              value: {{ .Values.env.entraJwksUrl | quote }}
+            - name: BIFROST_ENTRA_USER_MAP
+              value: {{ .Values.env.entraUserMap | quote }}
+            - name: BIFROST_PING_ISSUER
+              value: {{ .Values.env.pingIssuer | quote }}
+            - name: BIFROST_PING_AUDIENCE
+              value: {{ .Values.env.pingAudience | quote }}
+            - name: BIFROST_PING_DISCOVERY_URL
+              value: {{ .Values.env.pingDiscoveryUrl | quote }}
+            - name: BIFROST_PING_JWKS_URL
+              value: {{ .Values.env.pingJwksUrl | quote }}
+            - name: BIFROST_PING_SCOPE
+              value: {{ .Values.env.pingScope | quote }}
             {{- if .Values.env.userinfoUrl }}
             - name: BIFROST_USERINFO_URL
               value: {{ .Values.env.userinfoUrl | quote }}
-            {{- end }}
-            {{- if .Values.env.virtualKey.value }}
-            - name: BIFROST_VIRTUAL_KEY
-              value: {{ .Values.env.virtualKey.value | quote }}
-            {{- else if .Values.env.virtualKey.existingSecret }}
-            - name: BIFROST_VIRTUAL_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.env.virtualKey.existingSecret | quote }}
-                  key: {{ .Values.env.virtualKey.existingSecretKey | quote }}
             {{- end }}
             {{- if .Values.env.adminApiKey.existingSecret }}
             - name: BIFROST_ADMIN_API_KEY

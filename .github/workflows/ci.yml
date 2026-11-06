@@ -5,10 +5,15 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish immutable release and rolling GHCR tags
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   test:
@@ -31,6 +36,57 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     needs: test
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Read package version
+        run: |
+          VERSION=$(python - <<'PY'
+          import tomllib
+          import re
+
+          with open("pyproject.toml", "rb") as pyproject:
+              version = tomllib.load(pyproject)["project"]["version"]
+          if not re.fullmatch(r"0\.[0-9]+\.[0-9]+", version):
+              raise SystemExit(f"not a supported semantic release version: {version}")
+          print(version)
+          PY
+          )
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+      - name: Validate release dispatch
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_release
+        run: |
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "Release publishing must be dispatched from main." >&2
+            exit 1
+          fi
+      - name: Build image (no publish)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          build-args: |
+            VERSION=${{ env.VERSION }}
+            BUILD_SHA=${{ github.sha }}
+
+  release:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_release && github.ref == 'refs/heads/main'
+    # Serialize publishers so a second dispatch observes the first release tag.
+    concurrency:
+      group: bifrost-budget-ghcr-release
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
@@ -53,31 +109,28 @@ jobs:
           )
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
       - name: Log in to GHCR
-        if: github.ref == 'refs/heads/main'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Refuse existing release image tag
-        if: github.ref == 'refs/heads/main'
         run: |
           # Commit SHA and latest are intentionally mutable/rolling tags. The
           # semantic version tag is a release pointer and must never move.
-          # Check immediately before the push so chart-only changes cannot
-          # silently republish an existing release. A concurrent publisher may
-          # still win the race; registry immutability policy must reject it.
+          # Check immediately before the push; registry immutability policy
+          # rejects any concurrent publisher that wins the race.
           if docker manifest inspect "ghcr.io/jasonrve/bifrost-budget:${VERSION}" >/dev/null 2>&1; then
             echo "Refusing to publish existing release tag ${VERSION}" >&2
             exit 1
           fi
           echo "Release tag ${VERSION} is not present; SHA/latest remain explicit rolling tags."
-      - name: Build image
+      - name: Build and publish release image
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.ref == 'refs/heads/main' }}
+          push: true
           build-args: |
             VERSION=${{ env.VERSION }}
             BUILD_SHA=${{ github.sha }}
